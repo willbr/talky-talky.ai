@@ -13,6 +13,8 @@ import numpy as np
 SAMPLE_RATE = 22050
 CHANNELS = 1
 SAMPLE_WIDTH = 2  # bytes (16-bit signed PCM)
+SILENCE_THRESHOLD_RATIO = 0.02  # fraction of peak below which we consider a sample silent
+MAX_TRIM_SECONDS = 0.5
 
 
 def write_wav(path: Path, samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> None:
@@ -31,3 +33,26 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
         frames = r.readframes(n)
     samples = np.frombuffer(frames, dtype=np.int16)
     return samples, rate
+
+
+def trim_silence(samples: np.ndarray) -> np.ndarray:
+    if len(samples) == 0:
+        return samples
+
+    peak = int(np.max(np.abs(samples)))
+    if peak == 0:
+        return np.array([], dtype=np.int16)
+
+    threshold = int(peak * SILENCE_THRESHOLD_RATIO)
+    loud = np.flatnonzero(np.abs(samples) > threshold)
+    if loud.size == 0:
+        return np.array([], dtype=np.int16)
+
+    first, last = int(loud[0]), int(loud[-1])
+    max_trim = int(SAMPLE_RATE * MAX_TRIM_SECONDS)
+
+    # Trim silence from edges, but don't trim more than MAX_TRIM_SECONDS
+    start = min(first, max_trim)
+    end = max(last + 1, len(samples) - max_trim)
+
+    return samples[start:end]
