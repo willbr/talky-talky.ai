@@ -17,6 +17,7 @@ SILENCE_THRESHOLD_RATIO = 0.02  # fraction of peak below which we consider a sam
 MAX_TRIM_SECONDS = 0.5
 PEAK_TARGET = int(32767 * 10 ** (-3 / 20))  # -3 dBFS in int16 full scale (~23197)
 FADE_SECONDS = 0.005  # 5 ms linear fade-in/fade-out
+INTER_WORD_SILENCE_SECONDS = 0.030
 
 
 def write_wav(path: Path, samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> None:
@@ -28,8 +29,13 @@ def write_wav(path: Path, samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -
         w.writeframes(samples.tobytes())
 
 
-def read_wav(path: Path) -> tuple[np.ndarray, int]:
-    with wave.open(str(path), "rb") as r:
+def read_wav(source) -> tuple[np.ndarray, int]:
+    """Read a WAV file. `source` may be a path or a binary file-like object."""
+    if hasattr(source, "read"):
+        ctx = wave.open(source, "rb")
+    else:
+        ctx = wave.open(str(source), "rb")
+    with ctx as r:
         rate = r.getframerate()
         n = r.getnframes()
         frames = r.readframes(n)
@@ -85,3 +91,29 @@ def apply_fade(samples: np.ndarray) -> np.ndarray:
     out[:fade_n] *= ramp
     out[-fade_n:] *= ramp[::-1]
     return out.clip(-32768, 32767).astype(np.int16)
+
+
+def concatenate(paths: list[Path]) -> bytes:
+    """Read each WAV at `paths`, apply fade, append with inter-word silence, return WAV bytes."""
+    import io as _io
+
+    silence_n = int(SAMPLE_RATE * INTER_WORD_SILENCE_SECONDS)
+    silence = np.zeros(silence_n, dtype=np.int16)
+
+    chunks: list[np.ndarray] = []
+    for i, p in enumerate(paths):
+        samples, _ = read_wav(p)
+        samples = apply_fade(samples)
+        chunks.append(samples)
+        if i < len(paths) - 1:
+            chunks.append(silence)
+
+    output = np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
+
+    buf = _io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(CHANNELS)
+        w.setsampwidth(SAMPLE_WIDTH)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(output.tobytes())
+    return buf.getvalue()

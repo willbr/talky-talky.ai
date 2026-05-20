@@ -1,3 +1,5 @@
+import io
+
 import numpy as np
 import audio
 
@@ -99,3 +101,37 @@ def test_apply_fade_short_signal_returns_unchanged():
     samples = np.ones(fade_n, dtype=np.int16) * 10000
     faded = audio.apply_fade(samples)
     np.testing.assert_array_equal(faded, samples)
+
+
+def test_concatenate_combines_two_wavs(tmp_path):
+    a_samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000  # 1 sec
+    b_samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 5000   # 1 sec
+    a_path = tmp_path / "a.wav"
+    b_path = tmp_path / "b.wav"
+    audio.write_wav(a_path, a_samples)
+    audio.write_wav(b_path, b_samples)
+
+    wav_bytes = audio.concatenate([a_path, b_path])
+
+    # Load result back via stdlib wave to validate header + length
+    loaded, rate = audio.read_wav(io.BytesIO(wav_bytes))
+    assert rate == audio.SAMPLE_RATE
+    expected_silence = int(audio.SAMPLE_RATE * audio.INTER_WORD_SILENCE_SECONDS)
+    expected_len = len(a_samples) + expected_silence + len(b_samples)
+    assert len(loaded) == expected_len
+
+
+def test_concatenate_single_path_no_silence_appended(tmp_path):
+    samples = np.ones(1000, dtype=np.int16) * 10000
+    path = tmp_path / "only.wav"
+    audio.write_wav(path, samples)
+
+    wav_bytes = audio.concatenate([path])
+    loaded, _ = audio.read_wav(io.BytesIO(wav_bytes))
+    assert len(loaded) == len(samples)
+
+
+def test_concatenate_empty_list_returns_empty_wav():
+    wav_bytes = audio.concatenate([])
+    loaded, _ = audio.read_wav(io.BytesIO(wav_bytes))
+    assert len(loaded) == 0
