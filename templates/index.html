@@ -1,5 +1,46 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>talky-talky.ai</title></head>
-<body><div id="app">talky-talky.ai</div></body>
+<head>
+  <meta charset="utf-8">
+  <title>talky-talky.ai</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>talky-talky.ai</h1>
+    <p class="tag">basic concatenative TTS</p>
+  </header>
+
+  <section id="inventory-bar">
+    <h2>Inventory</h2>
+    <div id="inventory-chips" aria-live="polite"></div>
+  </section>
+
+  <main>
+    <section id="record-pane">
+      <h2>Record a word</h2>
+      <label>Word
+        <input id="word-input" type="text" autocomplete="off" placeholder="hello">
+      </label>
+      <div class="controls">
+        <button id="record-btn">● Record</button>
+        <button id="stop-btn" disabled>■ Stop</button>
+        <button id="save-btn" disabled>Save</button>
+        <button id="discard-btn" disabled>Discard</button>
+      </div>
+      <audio id="preview" controls></audio>
+      <p id="record-status" role="status"></p>
+    </section>
+
+    <section id="synth-pane">
+      <h2>Synthesise a sentence</h2>
+      <textarea id="sentence-input" rows="3" placeholder="hello world"></textarea>
+      <button id="synth-btn">Synthesise</button>
+      <audio id="output" controls></audio>
+      <div id="skipped-list" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}" type="module"></script>
+</body>
 </html>
