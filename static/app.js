@@ -170,5 +170,59 @@ els.saveBtn.addEventListener('click', async () => {
   await refreshInventory();
 });
 
+async function synthesise() {
+  const sentence = els.sentenceInput.value.trim();
+  if (!sentence) return;
+
+  const r = await fetch('/api/synthesize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sentence }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    els.skippedList.textContent = `synth failed: ${err.error || r.statusText}`;
+    return;
+  }
+  const { audio: b64, skipped } = await r.json();
+
+  if (b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'audio/wav' });
+    els.output.src = URL.createObjectURL(blob);
+    els.output.play().catch(() => { /* user gesture is the click on synth */ });
+  } else {
+    els.output.removeAttribute('src');
+  }
+
+  renderSkipped(skipped);
+}
+
+function renderSkipped(skipped) {
+  els.skippedList.innerHTML = '';
+  if (!skipped.length) return;
+
+  const label = document.createElement('span');
+  label.textContent = 'Skipped (click to record):';
+  label.style.color = 'var(--muted)';
+  label.style.marginRight = '0.4rem';
+  els.skippedList.appendChild(label);
+
+  for (const w of skipped) {
+    const chip = document.createElement('span');
+    chip.className = 'chip missing';
+    chip.textContent = w;
+    chip.addEventListener('click', () => {
+      els.wordInput.value = w;
+      els.wordInput.focus();
+    });
+    els.skippedList.appendChild(chip);
+  }
+}
+
+els.synthBtn.addEventListener('click', synthesise);
+
 refreshInventory();
 setButtons({ record: true, stop: false, save: false, discard: false });
