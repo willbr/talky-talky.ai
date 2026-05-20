@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Protocol
 
 import inventory
+import phonemes
 
 
 class Resolver(Protocol):
@@ -24,4 +25,19 @@ class WordResolver:
         return inventory.path(word) if inventory.has(word) else None
 
 
-RESOLVERS: list[Resolver] = [WordResolver()]
+class PhonemeResolver:
+    """Resolves an ARPABET phoneme token to its recorded WAV file.
+
+    Returns None for any token that is not itself a valid ARPABET symbol,
+    even if a file by that name exists in the word inventory. The synthesis
+    loop is responsible for phonemising English words; this resolver only
+    handles raw phoneme symbols.
+    """
+
+    def resolve(self, word: str) -> Path | None:
+        if not phonemes.is_phoneme(word):
+            return None
+        return inventory.phoneme_path(word) if inventory.has_phoneme(word) else None
+
+
+RESOLVERS: list[Resolver] = [WordResolver(), PhonemeResolver()]

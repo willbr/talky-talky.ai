@@ -29,3 +29,34 @@ def test_word_resolver_normalises_input(temp_inventory):
 
 def test_resolver_chain_contains_word_resolver():
     assert any(isinstance(r, resolver.WordResolver) for r in resolver.RESOLVERS)
+
+
+def test_phoneme_resolver_hit(temp_inventory):
+    inventory.save_phoneme("AA", b"fakewav")
+    r = resolver.PhonemeResolver()
+    assert r.resolve("AA") == temp_inventory / "phonemes" / "aa.wav"
+
+
+def test_phoneme_resolver_case_insensitive(temp_inventory):
+    inventory.save_phoneme("AA", b"fakewav")
+    r = resolver.PhonemeResolver()
+    assert r.resolve("aa") == temp_inventory / "phonemes" / "aa.wav"
+    assert r.resolve("Aa") == temp_inventory / "phonemes" / "aa.wav"
+
+
+def test_phoneme_resolver_miss_no_file(temp_inventory):
+    r = resolver.PhonemeResolver()
+    assert r.resolve("AA") is None
+
+
+def test_phoneme_resolver_rejects_non_arpabet(temp_inventory):
+    # Even if a file named "hello.wav" exists, PhonemeResolver does not look at words.
+    inventory.save("hello", b"fakewav")
+    r = resolver.PhonemeResolver()
+    assert r.resolve("hello") is None
+
+
+def test_resolvers_chain_order():
+    assert len(resolver.RESOLVERS) == 2
+    assert isinstance(resolver.RESOLVERS[0], resolver.WordResolver)
+    assert isinstance(resolver.RESOLVERS[1], resolver.PhonemeResolver)
