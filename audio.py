@@ -18,6 +18,7 @@ MAX_TRIM_SECONDS = 0.5
 PEAK_TARGET = int(32767 * 10 ** (-3 / 20))  # -3 dBFS in int16 full scale (~23197)
 FADE_SECONDS = 0.005  # 5 ms linear fade-in/fade-out
 INTER_WORD_SILENCE_SECONDS = 0.030
+MIN_LENGTH_SECONDS = 0.1
 
 
 def write_wav(path: Path, samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> None:
