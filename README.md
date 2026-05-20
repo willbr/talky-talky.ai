@@ -40,4 +40,17 @@ is a much smaller seed corpus designed to cover the unit set.
 
 ## Getting started
 
-Not yet runnable. Setup instructions will land with the first Flask app.
+Requires Python 3.11+ and a modern desktop browser (Chrome or Firefox) that
+supports the Web Audio API and AudioWorklet.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+python -m flask --app app run
+```
+
+Open `http://127.0.0.1:5000`. Record a few words, then type a sentence to
+synthesise it.
+
+Run tests with `pytest`.
