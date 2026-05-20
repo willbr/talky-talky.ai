@@ -20,3 +20,22 @@ def normalise(word: str) -> str:
     stripped = _PUNCT_RE.sub("", lower)
     collapsed = re.sub(r"\s+", " ", stripped).strip()
     return collapsed
+
+
+def path(word: str) -> Path:
+    return INVENTORY_DIR / f"{normalise(word)}.wav"
+
+
+def has(word: str) -> bool:
+    return path(word).exists()
+
+
+def save(word: str, wav_bytes: bytes) -> None:
+    INVENTORY_DIR.mkdir(parents=True, exist_ok=True)
+    path(word).write_bytes(wav_bytes)
+
+
+def list_words() -> list[str]:
+    if not INVENTORY_DIR.is_dir():
+        return []
+    return sorted(p.stem for p in INVENTORY_DIR.glob("*.wav"))
