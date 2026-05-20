@@ -1,3 +1,4 @@
+import base64
 import io
 import wave
 
@@ -7,6 +8,7 @@ import numpy as np
 import app as app_module
 import audio
 import inventory
+import synth
 
 
 @pytest.fixture
@@ -111,3 +113,47 @@ def test_record_overwrite_true_replaces(client, tmp_path):
     )
     assert r.status_code == 200
     assert (tmp_path / "hello.wav").read_bytes() != b"existing"
+
+
+def test_synthesize_returns_audio_and_skipped(client, tmp_path):
+    # Seed inventory with hello and world
+    for word in ("hello", "world"):
+        samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+        audio.write_wav(tmp_path / f"{word}.wav", samples)
+
+    r = client.post("/api/synthesize", json={"sentence": "Hello, world!"})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["skipped"] == []
+    assert data["audio"] is not None
+    decoded = base64.b64decode(data["audio"])
+    assert decoded.startswith(b"RIFF")
+
+
+def test_synthesize_reports_skipped(client, tmp_path):
+    samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+    audio.write_wav(tmp_path / "hello.wav", samples)
+
+    r = client.post("/api/synthesize", json={"sentence": "hello mars"})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["skipped"] == ["mars"]
+    assert data["audio"] is not None
+
+
+def test_synthesize_all_missing(client):
+    r = client.post("/api/synthesize", json={"sentence": "mars venus"})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["audio"] is None
+    assert data["skipped"] == ["mars", "venus"]
+
+
+def test_synthesize_empty_sentence_400(client):
+    r = client.post("/api/synthesize", json={"sentence": ""})
+    assert r.status_code == 400
+
+
+def test_synthesize_missing_field_400(client):
+    r = client.post("/api/synthesize", json={})
+    assert r.status_code == 400

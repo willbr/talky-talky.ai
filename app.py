@@ -1,6 +1,7 @@
 """Flask app factory and routes for talky-talky.ai."""
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import wave
@@ -10,6 +11,7 @@ from flask import Flask, jsonify, render_template, request
 
 import audio
 import inventory
+import synth
 
 log = logging.getLogger("talky")
 
@@ -79,6 +81,21 @@ def create_app() -> Flask:
 
         log.info("record: saved %r (%d samples)", word, len(samples))
         return jsonify({"word": word}), 200
+
+    @flask_app.route("/api/synthesize", methods=["POST"])
+    def api_synthesize():
+        data = request.get_json(silent=True) or {}
+        sentence = data.get("sentence")
+        if sentence is None:
+            return jsonify({"error": "missing 'sentence' field"}), 400
+        if not sentence.strip():
+            return jsonify({"error": "sentence is empty"}), 400
+
+        wav_bytes, skipped = synth.synthesise(sentence)
+        encoded = base64.b64encode(wav_bytes).decode("ascii") if wav_bytes else None
+        log.info("synthesize: %r resolved=%s skipped=%s",
+                 sentence, "yes" if wav_bytes else "no", skipped)
+        return jsonify({"audio": encoded, "skipped": skipped}), 200
 
     return flask_app
 
