@@ -1,3 +1,18 @@
+[project]
+name = "talky-talky"
+version = "0.1.0"
+description = "Basic concatenative text-to-speech in Python"
+requires-python = ">=3.11"
+dependencies = [
+    "flask==3.0.3",
+    "numpy==2.4.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
