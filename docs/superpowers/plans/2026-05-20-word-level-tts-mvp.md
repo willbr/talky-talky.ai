@@ -52,7 +52,7 @@ The `inventory/` directory will hold user recordings and should never be committ
 
 ```
 Flask==3.0.3
-numpy==2.1.3
+numpy==2.4.6
 ```
 
 - [ ] **Step 4: Create `requirements-dev.txt`**
