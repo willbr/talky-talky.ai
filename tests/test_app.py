@@ -250,3 +250,27 @@ def test_record_phoneme_overwrite_true_replaces(client, tmp_path):
     )
     assert r.status_code == 200
     assert (tmp_path / "phonemes" / "aa.wav").read_bytes() != b"existing"
+
+
+def test_phoneme_inventory_lists_all_39(client):
+    r = client.get("/api/phoneme-inventory")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert "phonemes" in data
+    assert len(data["phonemes"]) == 39
+    symbols = [entry["symbol"] for entry in data["phonemes"]]
+    assert symbols == list(phonemes.PHONEMES)  # canonical order
+    assert all(entry["recorded"] is False for entry in data["phonemes"])
+
+
+def test_phoneme_inventory_reflects_saved_phonemes(client, tmp_path):
+    (tmp_path / "phonemes").mkdir(exist_ok=True)
+    (tmp_path / "phonemes" / "aa.wav").write_bytes(b"x")
+    (tmp_path / "phonemes" / "b.wav").write_bytes(b"x")
+
+    r = client.get("/api/phoneme-inventory")
+    assert r.status_code == 200
+    by_symbol = {e["symbol"]: e["recorded"] for e in r.get_json()["phonemes"]}
+    assert by_symbol["AA"] is True
+    assert by_symbol["B"] is True
+    assert by_symbol["AE"] is False

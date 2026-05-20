@@ -141,6 +141,16 @@ def create_app() -> Flask:
         log.info("record/phoneme: saved %r (%d samples)", phoneme, len(samples))
         return jsonify({"phoneme": phoneme}), 200
 
+    @flask_app.route("/api/phoneme-inventory")
+    def api_phoneme_inventory():
+        recorded = set(inventory.list_recorded_phonemes())
+        return jsonify({
+            "phonemes": [
+                {"symbol": s, "recorded": s in recorded}
+                for s in phonemes.PHONEMES
+            ]
+        })
+
     @flask_app.route("/api/synthesize", methods=["POST"])
     def api_synthesize():
         data = request.get_json(silent=True) or {}
