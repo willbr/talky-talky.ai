@@ -8,6 +8,7 @@ import numpy as np
 import app as app_module
 import audio
 import inventory
+import phonemes
 import synth
 
 
@@ -157,3 +158,95 @@ def test_synthesize_empty_sentence_400(client):
 def test_synthesize_missing_field_400(client):
     r = client.post("/api/synthesize", json={})
     assert r.status_code == 400
+
+
+def test_record_phoneme_saves_valid_wav(client, tmp_path):
+    wav = _make_wav_bytes()
+    r = client.post(
+        "/api/record/phoneme",
+        data={"phoneme": "AA", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 200
+    assert r.get_json() == {"phoneme": "AA"}
+    assert (tmp_path / "phonemes" / "aa.wav").exists()
+
+
+def test_record_phoneme_case_insensitive(client, tmp_path):
+    wav = _make_wav_bytes()
+    r = client.post(
+        "/api/record/phoneme",
+        data={"phoneme": "aa", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 200
+    assert r.get_json() == {"phoneme": "AA"}
+    assert (tmp_path / "phonemes" / "aa.wav").exists()
+
+
+def test_record_phoneme_rejects_unknown_symbol(client):
+    wav = _make_wav_bytes()
+    r = client.post(
+        "/api/record/phoneme",
+        data={"phoneme": "ZZ", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+    body = r.get_json()
+    assert "allowed" in body
+    assert set(body["allowed"]) == phonemes.PHONEMES_SET
+
+
+def test_record_phoneme_rejects_empty_field(client):
+    wav = _make_wav_bytes()
+    r = client.post(
+        "/api/record/phoneme",
+        data={"phoneme": "", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+
+
+def test_record_phoneme_rejects_wrong_sample_rate(client):
+    wav = _make_wav_bytes(sample_rate=44100)
+    r = client.post(
+        "/api/record/phoneme",
+        data={"phoneme": "AA", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+
+
+def test_record_phoneme_rejects_too_short(client):
+    wav = _make_wav_bytes(n_samples=100)
+    r = client.post(
+        "/api/record/phoneme",
+        data={"phoneme": "AA", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+
+
+def test_record_phoneme_409_on_existing(client, tmp_path):
+    (tmp_path / "phonemes").mkdir(exist_ok=True)
+    (tmp_path / "phonemes" / "aa.wav").write_bytes(b"existing")
+    wav = _make_wav_bytes()
+    r = client.post(
+        "/api/record/phoneme",
+        data={"phoneme": "AA", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 409
+
+
+def test_record_phoneme_overwrite_true_replaces(client, tmp_path):
+    (tmp_path / "phonemes").mkdir(exist_ok=True)
+    (tmp_path / "phonemes" / "aa.wav").write_bytes(b"existing")
+    wav = _make_wav_bytes()
+    r = client.post(
+        "/api/record/phoneme?overwrite=true",
+        data={"phoneme": "AA", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 200
+    assert (tmp_path / "phonemes" / "aa.wav").read_bytes() != b"existing"
