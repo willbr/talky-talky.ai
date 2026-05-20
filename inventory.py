@@ -39,3 +39,30 @@ def list_words() -> list[str]:
     if not INVENTORY_DIR.is_dir():
         return []
     return sorted(p.stem for p in INVENTORY_DIR.glob("*.wav"))
+
+
+PHONEME_SUBDIR = "phonemes"
+
+
+def _phoneme_dir() -> Path:
+    return INVENTORY_DIR / PHONEME_SUBDIR
+
+
+def phoneme_path(phoneme: str) -> Path:
+    return _phoneme_dir() / f"{phoneme.lower()}.wav"
+
+
+def has_phoneme(phoneme: str) -> bool:
+    return phoneme_path(phoneme).exists()
+
+
+def save_phoneme(phoneme: str, wav_bytes: bytes) -> None:
+    _phoneme_dir().mkdir(parents=True, exist_ok=True)
+    phoneme_path(phoneme).write_bytes(wav_bytes)
+
+
+def list_recorded_phonemes() -> list[str]:
+    d = _phoneme_dir()
+    if not d.is_dir():
+        return []
+    return sorted(p.stem.upper() for p in d.glob("*.wav"))

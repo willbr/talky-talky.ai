@@ -58,3 +58,31 @@ def test_save_creates_inventory_dir_if_missing(tmp_path, monkeypatch):
     inventory.save("hello", b"x")
     assert target.is_dir()
     assert (target / "hello.wav").exists()
+
+
+def test_phoneme_path_lowercases_filename(temp_inventory):
+    assert inventory.phoneme_path("AA") == temp_inventory / "phonemes" / "aa.wav"
+    assert inventory.phoneme_path("aa") == temp_inventory / "phonemes" / "aa.wav"
+
+
+def test_has_phoneme_reflects_existence(temp_inventory):
+    assert not inventory.has_phoneme("AA")
+    inventory.save_phoneme("AA", b"x")
+    assert inventory.has_phoneme("AA")
+    assert inventory.has_phoneme("aa")
+
+
+def test_save_phoneme_creates_phoneme_dir(temp_inventory):
+    inventory.save_phoneme("AA", b"wavbytes")
+    assert (temp_inventory / "phonemes" / "aa.wav").read_bytes() == b"wavbytes"
+
+
+def test_list_recorded_phonemes_returns_uppercase_sorted(temp_inventory):
+    inventory.save_phoneme("OW", b"x")
+    inventory.save_phoneme("AA", b"x")
+    inventory.save_phoneme("k", b"x")
+    assert inventory.list_recorded_phonemes() == ["AA", "K", "OW"]
+
+
+def test_list_recorded_phonemes_empty_when_no_dir(temp_inventory):
+    assert inventory.list_recorded_phonemes() == []
