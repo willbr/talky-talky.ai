@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import audio
 import inventory
+import phonemes
 import resolver
 
 
@@ -14,31 +15,70 @@ def tokenise(sentence: str) -> list[str]:
 
 
 def synthesise(sentence: str) -> tuple[bytes | None, list[str]]:
-    """Synthesise a sentence by stitching recorded word files.
+    """Synthesise a sentence by stitching word recordings and/or phoneme recordings.
 
-    Returns (wav_bytes_or_None, skipped_tokens). `wav_bytes` is None when
-    nothing in the sentence could be resolved (either the sentence is empty
-    or every token is missing).
+    For each token in the sentence:
+      1. Walk the resolver chain. If a resolver returns a Path, use it as a
+         single-element group.
+      2. Otherwise, if the token is itself an ARPABET symbol that wasn't
+         resolved (no phoneme file recorded), skip the token.
+      3. Otherwise, look the token up in CMUdict. If absent → skip. If
+         present, try the resolver chain on each phoneme. If every phoneme
+         resolves, the word becomes a group of phoneme paths. If any phoneme
+         is missing → skip the whole word (all-or-nothing).
+
+    Returns (wav_bytes_or_None, skipped_tokens).
     """
     tokens = tokenise(sentence)
     if not tokens:
         return None, []
 
-    resolved_paths = []
+    groups: list[list] = []
     skipped: list[str] = []
+
     for token in tokens:
-        path = None
+        # Pass 1: try the chain on the raw token.
+        direct = None
         for r in resolver.RESOLVERS:
-            path = r.resolve(token)
-            if path is not None:
+            direct = r.resolve(token)
+            if direct is not None:
                 break
-        if path is None:
+
+        if direct is not None:
+            groups.append([direct])
+            continue
+
+        # If the token itself is a phoneme symbol, the chain already had its chance.
+        if phonemes.is_phoneme(token):
+            skipped.append(token)
+            continue
+
+        # Pass 2: phonemise via CMUdict, then resolve each phoneme.
+        phs = phonemes.word_to_phonemes(token)
+        if phs is None:
+            skipped.append(token)
+            continue
+
+        phoneme_paths = []
+        all_resolved = True
+        for ph in phs:
+            ph_path = None
+            for r in resolver.RESOLVERS:
+                ph_path = r.resolve(ph)
+                if ph_path is not None:
+                    break
+            if ph_path is None:
+                all_resolved = False
+                break
+            phoneme_paths.append(ph_path)
+
+        if not all_resolved:
             skipped.append(token)
         else:
-            resolved_paths.append(path)
+            groups.append(phoneme_paths)
 
-    if not resolved_paths:
+    if not groups:
         return None, skipped
 
-    wav_bytes = audio.concatenate(resolved_paths)
+    wav_bytes = audio.concatenate(groups)
     return wav_bytes, skipped
