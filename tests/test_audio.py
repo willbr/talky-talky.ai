@@ -69,3 +69,33 @@ def test_peak_target_constant():
     # -3 dBFS relative to int16 full scale
     expected = int(32767 * 10 ** (-3 / 20))
     assert audio.PEAK_TARGET == expected
+
+
+def test_apply_fade_ramps_start_and_end():
+    samples = np.ones(2000, dtype=np.int16) * 10000
+    faded = audio.apply_fade(samples)
+
+    fade_n = int(audio.SAMPLE_RATE * audio.FADE_SECONDS)
+    # First sample of fade-in is ~0, ramps up
+    assert abs(int(faded[0])) < 100
+    assert int(faded[fade_n // 2]) < int(faded[fade_n - 1])
+    # Last sample of fade-out is ~0, ramps down
+    assert abs(int(faded[-1])) < 100
+    assert int(faded[-fade_n // 2]) < int(faded[-fade_n])
+
+
+def test_apply_fade_leaves_middle_unchanged():
+    samples = np.ones(2000, dtype=np.int16) * 10000
+    faded = audio.apply_fade(samples)
+
+    fade_n = int(audio.SAMPLE_RATE * audio.FADE_SECONDS)
+    middle = faded[fade_n:-fade_n]
+    np.testing.assert_array_equal(middle, samples[fade_n:-fade_n])
+
+
+def test_apply_fade_short_signal_returns_unchanged():
+    # Signal shorter than 2 * fade window — fade can't be applied safely
+    fade_n = int(audio.SAMPLE_RATE * audio.FADE_SECONDS)
+    samples = np.ones(fade_n, dtype=np.int16) * 10000
+    faded = audio.apply_fade(samples)
+    np.testing.assert_array_equal(faded, samples)

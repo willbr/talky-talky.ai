@@ -16,6 +16,7 @@ SAMPLE_WIDTH = 2  # bytes (16-bit signed PCM)
 SILENCE_THRESHOLD_RATIO = 0.02  # fraction of peak below which we consider a sample silent
 MAX_TRIM_SECONDS = 0.5
 PEAK_TARGET = int(32767 * 10 ** (-3 / 20))  # -3 dBFS in int16 full scale (~23197)
+FADE_SECONDS = 0.005  # 5 ms linear fade-in/fade-out
 
 
 def write_wav(path: Path, samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> None:
@@ -68,3 +69,19 @@ def peak_normalise(samples: np.ndarray) -> np.ndarray:
         return samples
     scale = PEAK_TARGET / peak
     return (samples.astype(np.float32) * scale).clip(-32768, 32767).astype(np.int16)
+
+
+def apply_fade(samples: np.ndarray) -> np.ndarray:
+    """Apply a 5 ms linear fade-in at the start and fade-out at the end.
+
+    Returns the input unchanged if it is shorter than two fade windows.
+    """
+    fade_n = int(SAMPLE_RATE * FADE_SECONDS)
+    if len(samples) < 2 * fade_n:
+        return samples
+
+    ramp = np.linspace(0.0, 1.0, fade_n, dtype=np.float32)
+    out = samples.astype(np.float32).copy()
+    out[:fade_n] *= ramp
+    out[-fade_n:] *= ramp[::-1]
+    return out.clip(-32768, 32767).astype(np.int16)
