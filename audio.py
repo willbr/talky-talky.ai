@@ -94,19 +94,40 @@ def apply_fade(samples: np.ndarray) -> np.ndarray:
     return out.clip(-32768, 32767).astype(np.int16)
 
 
-def concatenate(paths: list[Path]) -> bytes:
-    """Read each WAV at `paths`, apply fade, append with inter-word silence, return WAV bytes."""
+def concatenate(paths_or_groups: "list[Path] | list[list[Path]]") -> bytes:
+    """Read WAVs, apply fades, return a single WAV byte string.
+
+    Accepts either:
+      - `list[Path]` — flat. Inserts `INTER_WORD_SILENCE_SECONDS` of silence
+        between every adjacent pair.
+      - `list[list[Path]]` — grouped. Inserts that silence BETWEEN inner
+        groups only. Adjacent paths inside the same inner group are
+        concatenated with zero silence (the 5 ms fades alone suppress clicks).
+
+    Empty inner groups are silently dropped. An empty top-level list
+    produces an empty WAV.
+    """
     import io as _io
+
+    # Detect shape: a non-empty list whose first element is itself a list → grouped.
+    if paths_or_groups and isinstance(paths_or_groups[0], list):
+        groups: list[list[Path]] = [g for g in paths_or_groups if g]  # drop empty inner groups
+    elif paths_or_groups:
+        # Flat list — treat each path as its own group of one.
+        groups = [[p] for p in paths_or_groups]
+    else:
+        groups = []
 
     silence_n = int(SAMPLE_RATE * INTER_WORD_SILENCE_SECONDS)
     silence = np.zeros(silence_n, dtype=np.int16)
 
     chunks: list[np.ndarray] = []
-    for i, p in enumerate(paths):
-        samples, _ = read_wav(p)
-        samples = apply_fade(samples)
-        chunks.append(samples)
-        if i < len(paths) - 1:
+    for gi, group in enumerate(groups):
+        for p in group:
+            samples, _ = read_wav(p)
+            samples = apply_fade(samples)
+            chunks.append(samples)
+        if gi < len(groups) - 1:
             chunks.append(silence)
 
     output = np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)

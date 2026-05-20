@@ -135,3 +135,49 @@ def test_concatenate_empty_list_returns_empty_wav():
     wav_bytes = audio.concatenate([])
     loaded, _ = audio.read_wav(io.BytesIO(wav_bytes))
     assert len(loaded) == 0
+
+
+def test_concatenate_grouped_silence_between_groups_only(tmp_path):
+    """[[a, b], [c]] -> a + b + 30ms + c (no silence between a and b)."""
+    samples_a = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+    samples_b = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 8000
+    samples_c = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 6000
+    a = tmp_path / "a.wav"; audio.write_wav(a, samples_a)
+    b = tmp_path / "b.wav"; audio.write_wav(b, samples_b)
+    c = tmp_path / "c.wav"; audio.write_wav(c, samples_c)
+
+    wav_bytes = audio.concatenate([[a, b], [c]])
+    loaded, _ = audio.read_wav(io.BytesIO(wav_bytes))
+
+    inter = int(audio.SAMPLE_RATE * audio.INTER_WORD_SILENCE_SECONDS)
+    expected_len = len(samples_a) + len(samples_b) + inter + len(samples_c)
+    assert len(loaded) == expected_len
+
+
+def test_concatenate_grouped_drops_empty_inner_groups(tmp_path):
+    samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+    p = tmp_path / "a.wav"; audio.write_wav(p, samples)
+
+    wav_bytes = audio.concatenate([[], [p], []])
+    loaded, _ = audio.read_wav(io.BytesIO(wav_bytes))
+    assert len(loaded) == len(samples)
+
+
+def test_concatenate_grouped_empty_outer_list_returns_empty_wav():
+    wav_bytes = audio.concatenate([[], []])
+    loaded, _ = audio.read_wav(io.BytesIO(wav_bytes))
+    assert len(loaded) == 0
+
+
+def test_concatenate_flat_list_still_works(tmp_path):
+    """Backward compatibility: flat list[Path] still inserts inter-word silence."""
+    samples_a = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+    samples_b = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 8000
+    a = tmp_path / "a.wav"; audio.write_wav(a, samples_a)
+    b = tmp_path / "b.wav"; audio.write_wav(b, samples_b)
+
+    wav_bytes = audio.concatenate([a, b])
+    loaded, _ = audio.read_wav(io.BytesIO(wav_bytes))
+
+    inter = int(audio.SAMPLE_RATE * audio.INTER_WORD_SILENCE_SECONDS)
+    assert len(loaded) == len(samples_a) + inter + len(samples_b)
