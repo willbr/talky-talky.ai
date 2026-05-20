@@ -51,3 +51,21 @@ def test_trim_silence_caps_at_max_trim():
     max_trim = int(audio.SAMPLE_RATE * 0.5)
     expected_min_len = (silence_samples - max_trim) + tone_samples
     assert len(trimmed) >= expected_min_len
+
+
+def test_peak_normalise_scales_to_target():
+    samples = np.array([0, 1000, -1000, 500], dtype=np.int16)
+    normalised = audio.peak_normalise(samples)
+    assert int(np.max(np.abs(normalised))) == audio.PEAK_TARGET
+
+
+def test_peak_normalise_silent_input_unchanged():
+    silent = np.zeros(100, dtype=np.int16)
+    out = audio.peak_normalise(silent)
+    np.testing.assert_array_equal(out, silent)
+
+
+def test_peak_target_constant():
+    # -3 dBFS relative to int16 full scale
+    expected = int(32767 * 10 ** (-3 / 20))
+    assert audio.PEAK_TARGET == expected

@@ -15,6 +15,7 @@ CHANNELS = 1
 SAMPLE_WIDTH = 2  # bytes (16-bit signed PCM)
 SILENCE_THRESHOLD_RATIO = 0.02  # fraction of peak below which we consider a sample silent
 MAX_TRIM_SECONDS = 0.5
+PEAK_TARGET = int(32767 * 10 ** (-3 / 20))  # -3 dBFS in int16 full scale (~23197)
 
 
 def write_wav(path: Path, samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> None:
@@ -56,3 +57,14 @@ def trim_silence(samples: np.ndarray) -> np.ndarray:
     end = max(last + 1, len(samples) - max_trim)
 
     return samples[start:end]
+
+
+def peak_normalise(samples: np.ndarray) -> np.ndarray:
+    """Scale samples so the loudest sample sits at PEAK_TARGET. Silent input is returned unchanged."""
+    if len(samples) == 0:
+        return samples
+    peak = int(np.max(np.abs(samples)))
+    if peak == 0:
+        return samples
+    scale = PEAK_TARGET / peak
+    return (samples.astype(np.float32) * scale).clip(-32768, 32767).astype(np.int16)
