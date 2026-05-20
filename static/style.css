@@ -88,3 +88,41 @@ audio { display: block; width: 100%; margin: 0.6rem 0; }
 #record-status { color: var(--muted); margin: 0.4rem 0 0 0; min-height: 1.3em; }
 
 #skipped-list { margin-top: 0.8rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+#phoneme-pane {
+  background: var(--panel);
+  padding: 1.2rem;
+  border-radius: var(--radius);
+  margin-top: 1.5rem;
+}
+
+#phoneme-pane h2 { margin-top: 0; }
+#phoneme-pane .hint { color: var(--muted); margin-top: 0; }
+
+#phoneme-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.8rem;
+}
+
+.phoneme-chip {
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 6px;
+  cursor: pointer;
+  background: #4a2e2e;
+  color: var(--error);
+  user-select: none;
+  border: 1px solid transparent;
+}
+
+.phoneme-chip.recorded {
+  background: #2e4a32;
+  color: #8fdf9b;
+}
+
+.phoneme-chip.armed {
+  border-color: var(--accent);
+}

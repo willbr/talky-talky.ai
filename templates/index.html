@@ -41,6 +41,12 @@
     </section>
   </main>
 
+  <section id="phoneme-pane">
+    <h2>Phoneme inventory</h2>
+    <p class="hint">Click a chip to record that phoneme. Green = recorded, red = not yet.</p>
+    <div id="phoneme-grid" aria-live="polite"></div>
+  </section>
+
   <script src="{{ url_for('static', filename='app.js') }}" type="module"></script>
 </body>
 </html>
