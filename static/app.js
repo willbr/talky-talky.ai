@@ -13,12 +13,14 @@ const els = {
   synthBtn: document.getElementById('synth-btn'),
   output: document.getElementById('output'),
   skippedList: document.getElementById('skipped-list'),
+  phonemeGrid: document.getElementById('phoneme-grid'),
 };
 
 let audioCtx = null;
 let workletNode = null;
 let mediaStream = null;
 let currentWavBlob = null;
+let currentPhoneme = null;   // null => recording for a word; non-null => recording for this phoneme
 
 async function ensureAudio() {
   if (audioCtx) return;
@@ -106,6 +108,10 @@ function setButtons({ record, stop, save, discard }) {
 }
 
 async function refreshInventory() {
+  await Promise.all([refreshWordInventory(), refreshPhonemeInventory()]);
+}
+
+async function refreshWordInventory() {
   const r = await fetch('/api/inventory');
   const { words } = await r.json();
   els.inventoryChips.innerHTML = '';
@@ -114,6 +120,38 @@ async function refreshInventory() {
     chip.className = 'chip';
     chip.textContent = w;
     els.inventoryChips.appendChild(chip);
+  }
+}
+
+async function refreshPhonemeInventory() {
+  const r = await fetch('/api/phoneme-inventory');
+  const { phonemes } = await r.json();
+  els.phonemeGrid.innerHTML = '';
+  for (const { symbol, recorded } of phonemes) {
+    const chip = document.createElement('span');
+    chip.className = 'phoneme-chip' + (recorded ? ' recorded' : '');
+    chip.textContent = symbol;
+    chip.dataset.symbol = symbol;
+    chip.addEventListener('click', () => armPhoneme(symbol));
+    if (currentPhoneme === symbol) chip.classList.add('armed');
+    els.phonemeGrid.appendChild(chip);
+  }
+}
+
+function armPhoneme(symbol) {
+  currentPhoneme = symbol;
+  els.wordInput.value = '';   // clear any half-typed word
+  setStatus(`Recording phoneme ${symbol} — press Record`);
+  // Re-paint chips so the new selection is highlighted.
+  for (const chip of els.phonemeGrid.querySelectorAll('.phoneme-chip')) {
+    chip.classList.toggle('armed', chip.dataset.symbol === symbol);
+  }
+}
+
+function disarmPhoneme() {
+  currentPhoneme = null;
+  for (const chip of els.phonemeGrid.querySelectorAll('.phoneme-chip')) {
+    chip.classList.remove('armed');
   }
 }
 
@@ -142,14 +180,10 @@ els.discardBtn.addEventListener('click', () => {
   setButtons({ record: true, stop: false, save: false, discard: false });
 });
 
-els.saveBtn.addEventListener('click', async () => {
-  const word = els.wordInput.value.trim();
-  if (!word) { setStatus('enter a word first', true); return; }
-  if (!currentWavBlob) { setStatus('record something first', true); return; }
-
+async function saveWord(word, blob) {
   const form = new FormData();
   form.append('word', word);
-  form.append('audio', currentWavBlob, 'audio.wav');
+  form.append('audio', blob, 'audio.wav');
 
   let r = await fetch('/api/record', { method: 'POST', body: form });
   if (r.status === 409) {
@@ -163,9 +197,42 @@ els.saveBtn.addEventListener('click', async () => {
   }
   const { word: saved } = await r.json();
   setStatus(`saved "${saved}"`);
+  els.wordInput.value = '';
+}
+
+async function savePhoneme(symbol, blob) {
+  const form = new FormData();
+  form.append('phoneme', symbol);
+  form.append('audio', blob, 'audio.wav');
+
+  let r = await fetch('/api/record/phoneme', { method: 'POST', body: form });
+  if (r.status === 409) {
+    if (!confirm(`Phoneme ${symbol} already recorded. Overwrite?`)) return;
+    r = await fetch('/api/record/phoneme?overwrite=true', { method: 'POST', body: form });
+  }
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setStatus(`save failed: ${err.error || r.statusText}`, true);
+    return;
+  }
+  const { phoneme: saved } = await r.json();
+  setStatus(`saved phoneme ${saved}`);
+  disarmPhoneme();
+}
+
+els.saveBtn.addEventListener('click', async () => {
+  if (!currentWavBlob) { setStatus('record something first', true); return; }
+
+  if (currentPhoneme) {
+    await savePhoneme(currentPhoneme, currentWavBlob);
+  } else {
+    const word = els.wordInput.value.trim();
+    if (!word) { setStatus('enter a word first', true); return; }
+    await saveWord(word, currentWavBlob);
+  }
+
   currentWavBlob = null;
   els.preview.removeAttribute('src');
-  els.wordInput.value = '';
   setButtons({ record: true, stop: false, save: false, discard: false });
   await refreshInventory();
 });
@@ -223,6 +290,10 @@ function renderSkipped(skipped) {
 }
 
 els.synthBtn.addEventListener('click', synthesise);
+
+els.wordInput.addEventListener('input', () => {
+  if (currentPhoneme && els.wordInput.value.trim()) disarmPhoneme();
+});
 
 refreshInventory();
 setButtons({ record: true, stop: false, save: false, discard: false });
