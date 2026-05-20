@@ -52,3 +52,29 @@ Open `http://127.0.0.1:5000`. Record a few words, then type a sentence to
 synthesise it.
 
 Run tests with `uv run pytest`.
+
+## Phoneme fallback
+
+If a sentence contains a word you haven't recorded directly, the synthesiser
+tries to stitch it from individually-recorded phoneme samples. The bundled
+[CMU Pronouncing Dictionary](data/cmudict.dict) provides the
+grapheme-to-phoneme mapping. The phoneme inventory has 39 ARPABET symbols,
+each shown as a chip below the record/synthesise panes — click any unrecorded
+(red) chip to record that phoneme.
+
+A word is synthesised via phonemes only if **every** required phoneme is
+recorded. Words missing one or more phonemes, or words not in the dictionary,
+are listed as skipped under the synthesise pane.
+
+## todo
+
+- use whisper.cpp to help with the recorded wave files
+- input paragraph that uses all phonemes and can be cut up
+- /init
+- use https://github.com/tinygrad/tinygrad
+- use tinygrad webgpu
+- synthesize phonemes
+- text -> wav -> ai to tidy wav up -> new wav
+- text -> ai -> wav
+- do we really need all these tests?
+
