@@ -179,6 +179,7 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   height: 150px;
   background: #1a1b1e;
   border-radius: 4px;
+  cursor: pointer;
 }
 
 #skipped-list,

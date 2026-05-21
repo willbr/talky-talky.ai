@@ -375,7 +375,7 @@ async function synthesise() {
   const { audio: b64, skipped, units, spectrogram } = result;
 
   setAudioFromBase64(els.output, b64);
-  drawSpectrogram(els.outputSpec, spectrogram, units);
+  drawSpectrogram(els.outputSpec, els.output, spectrogram, units);
   if (b64) {
     els.output.play().catch(() => { /* user gesture is the click on synth */ });
   }
@@ -406,8 +406,8 @@ async function compareSynth() {
 
   setAudioFromBase64(els.compareOutputNormal, normal.audio);
   setAudioFromBase64(els.compareOutputPhonemes, phonemes.audio);
-  drawSpectrogram(els.compareOutputNormalSpec, normal.spectrogram, normal.units);
-  drawSpectrogram(els.compareOutputPhonemesSpec, phonemes.spectrogram, phonemes.units);
+  drawSpectrogram(els.compareOutputNormalSpec, els.compareOutputNormal, normal.spectrogram, normal.units);
+  drawSpectrogram(els.compareOutputPhonemesSpec, els.compareOutputPhonemes, phonemes.spectrogram, phonemes.units);
 
   // Use the normal-mode skip list for chip filtering; it represents words
   // that simply have no source audio at all (no word recording, no phoneme
@@ -419,13 +419,22 @@ async function compareSynth() {
   renderSkipped(skippedUnion);
 }
 
-function drawSpectrogram(canvas, spec, units) {
+function drawSpectrogram(canvas, audioEl, spec, units) {
   if (!canvas) return;
   if (!spec || !spec.n_frames || !spec.duration_ms) {
     canvas.hidden = true;
+    canvas.onclick = null;
     return;
   }
   canvas.hidden = false;
+
+  canvas.onclick = (e) => {
+    if (!audioEl || !audioEl.src) return;
+    const rect = canvas.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    audioEl.currentTime = (fraction * spec.duration_ms) / 1000;
+    audioEl.play().catch(() => { /* user gesture is the click */ });
+  };
 
   const cssW = canvas.clientWidth || 600;
   if (canvas.width !== cssW) canvas.width = cssW;
