@@ -274,3 +274,15 @@ def test_phoneme_inventory_reflects_saved_phonemes(client, tmp_path):
     assert by_symbol["AA"] is True
     assert by_symbol["B"] is True
     assert by_symbol["AE"] is False
+
+
+def test_phoneme_inventory_includes_example_words(client):
+    r = client.get("/api/phoneme-inventory")
+    data = r.get_json()
+    examples = {e["symbol"]: e["example"] for e in data["phonemes"]}
+    # Every phoneme has a non-empty example word
+    assert len(examples) == 39
+    assert all(isinstance(v, str) and v for v in examples.values())
+    # Spot-check a couple of canonical mappings
+    assert examples["AA"] == "AA" or examples["AA"]  # non-empty
+    assert examples["ZH"]

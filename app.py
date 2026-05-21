@@ -146,7 +146,11 @@ def create_app() -> Flask:
         recorded = set(inventory.list_recorded_phonemes())
         return jsonify({
             "phonemes": [
-                {"symbol": s, "recorded": s in recorded}
+                {
+                    "symbol": s,
+                    "example": phonemes.PHONEME_EXAMPLES[s],
+                    "recorded": s in recorded,
+                }
                 for s in phonemes.PHONEMES
             ]
         })

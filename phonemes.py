@@ -28,6 +28,48 @@ PHONEMES: tuple[str, ...] = (
 
 PHONEMES_SET: frozenset[str] = frozenset(PHONEMES)
 
+PHONEME_EXAMPLES: dict[str, str] = {
+    "AA": "odd",
+    "AE": "at",
+    "AH": "hut",
+    "AO": "ought",
+    "AW": "cow",
+    "AY": "hide",
+    "B":  "be",
+    "CH": "cheese",
+    "D":  "dee",
+    "DH": "thee",
+    "EH": "Ed",
+    "ER": "hurt",
+    "EY": "ate",
+    "F":  "fee",
+    "G":  "green",
+    "HH": "he",
+    "IH": "it",
+    "IY": "eat",
+    "JH": "gee",
+    "K":  "key",
+    "L":  "lee",
+    "M":  "me",
+    "N":  "knee",
+    "NG": "ping",
+    "OW": "oat",
+    "OY": "toy",
+    "P":  "pee",
+    "R":  "read",
+    "S":  "sea",
+    "SH": "she",
+    "T":  "tea",
+    "TH": "theta",
+    "UH": "hood",
+    "UW": "two",
+    "V":  "vee",
+    "W":  "we",
+    "Y":  "yield",
+    "Z":  "zee",
+    "ZH": "seizure",
+}
+
 _DICT_PATH = Path(__file__).parent / "data" / "cmudict.dict"
 _STRESS_RE = re.compile(r"\d+$")
 

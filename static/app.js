@@ -127,21 +127,35 @@ async function refreshPhonemeInventory() {
   const r = await fetch('/api/phoneme-inventory');
   const { phonemes } = await r.json();
   els.phonemeGrid.innerHTML = '';
-  for (const { symbol, recorded } of phonemes) {
+  for (const { symbol, example, recorded } of phonemes) {
     const chip = document.createElement('span');
     chip.className = 'phoneme-chip' + (recorded ? ' recorded' : '');
-    chip.textContent = symbol;
     chip.dataset.symbol = symbol;
-    chip.addEventListener('click', () => armPhoneme(symbol));
+    chip.dataset.example = example;
+
+    const symEl = document.createElement('span');
+    symEl.className = 'phoneme-symbol';
+    symEl.textContent = symbol;
+
+    const exEl = document.createElement('span');
+    exEl.className = 'phoneme-example';
+    exEl.textContent = example;
+
+    chip.appendChild(symEl);
+    chip.appendChild(document.createTextNode(' '));
+    chip.appendChild(exEl);
+
+    chip.addEventListener('click', () => armPhoneme(symbol, example));
     if (currentPhoneme === symbol) chip.classList.add('armed');
     els.phonemeGrid.appendChild(chip);
   }
 }
 
-function armPhoneme(symbol) {
+function armPhoneme(symbol, example) {
   currentPhoneme = symbol;
   els.wordInput.value = '';   // clear any half-typed word
-  setStatus(`Recording phoneme ${symbol} — press Record`);
+  const hint = example ? ` — as in "${example}"` : '';
+  setStatus(`Recording phoneme ${symbol}${hint} — press Record`);
   // Re-paint chips so the new selection is highlighted.
   for (const chip of els.phonemeGrid.querySelectorAll('.phoneme-chip')) {
     chip.classList.toggle('armed', chip.dataset.symbol === symbol);

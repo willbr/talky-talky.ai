@@ -32,6 +32,11 @@ def test_list_phonemes_returns_canonical_list():
     assert result == list(phonemes.PHONEMES)
 
 
+def test_phoneme_examples_cover_every_phoneme():
+    assert set(phonemes.PHONEME_EXAMPLES.keys()) == phonemes.PHONEMES_SET
+    assert all(isinstance(v, str) and v for v in phonemes.PHONEME_EXAMPLES.values())
+
+
 def test_word_to_phonemes_known_word():
     # "hello" is a stable entry in CMUdict
     assert phonemes.word_to_phonemes("hello") == ["HH", "AH", "L", "OW"]
