@@ -122,7 +122,20 @@ async function refreshWordInventory() {
   for (const w of words) {
     const chip = document.createElement('span');
     chip.className = 'chip';
-    chip.textContent = w;
+    const label = document.createElement('span');
+    label.textContent = w;
+    chip.appendChild(label);
+
+    const edit = document.createElement('button');
+    edit.className = 'chip-edit';
+    edit.textContent = '✎';
+    edit.title = `Extract phonemes from "${w}"`;
+    edit.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openExtractEditor(w);
+    });
+    chip.appendChild(edit);
+
     els.inventoryChips.appendChild(chip);
   }
 }
@@ -216,6 +229,9 @@ async function saveWord(word, blob) {
   const { word: saved } = await r.json();
   setStatus(`saved "${saved}"`);
   els.wordInput.value = '';
+
+  // After a successful word save, automatically offer phoneme extraction.
+  openExtractEditor(saved);
 }
 
 async function savePhoneme(symbol, blob) {
@@ -408,6 +424,10 @@ function buildEditorDom() {
     play.className = 'play';
     play.textContent = '▶';
     play.title = `Play ${ph.symbol}`;
+    play.addEventListener('click', (e) => {
+      e.preventDefault();
+      playSlice(editor.boundariesMs[i], editor.boundariesMs[i + 1]);
+    });
 
     const duration = document.createElement('span');
     duration.className = 'duration';
@@ -434,6 +454,7 @@ function buildEditorDom() {
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save phonemes';
   saveBtn.className = 'save';
+  saveBtn.addEventListener('click', () => savePhonemesFromEditor());
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
   cancelBtn.className = 'cancel';
@@ -560,4 +581,61 @@ function updateRowDurations() {
     const durEl = row.querySelector('.duration');
     if (durEl) durEl.textContent = `${dur} ms`;
   }
+}
+
+async function ensureEditorAudioBuffer() {
+  if (!editor) return null;
+  if (editor.audioBuffer) return editor.audioBuffer;
+  const bin = atob(editor.audioBase64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
+  editor.audioCtx = ctx;
+  editor.audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+  return editor.audioBuffer;
+}
+
+async function playSlice(startMs, endMs) {
+  const buffer = await ensureEditorAudioBuffer();
+  if (!buffer) return;
+  const src = editor.audioCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(editor.audioCtx.destination);
+  const startSec = startMs / 1000;
+  const durationSec = Math.max(0.01, (endMs - startMs) / 1000);
+  src.start(0, startSec, durationSec);
+}
+
+async function savePhonemesFromEditor() {
+  if (!editor) return;
+  const word = editor.word;
+  const boundariesMs = editor.boundariesMs.slice();
+  const checkboxes = editor.container.querySelectorAll('.row input[type=checkbox]');
+  const saveFlags = Array.from(checkboxes).map((cb) => cb.checked);
+
+  let r;
+  try {
+    r = await fetch('/api/extract/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word, boundaries_ms: boundariesMs, save: saveFlags }),
+    });
+  } catch (e) {
+    setStatus(`Save phonemes failed: ${e.message}`, true);
+    return;
+  }
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setStatus(`Save phonemes: ${err.error || r.statusText}`, true);
+    return;
+  }
+  const { saved, skipped } = await r.json();
+  let msg = `Saved phonemes: ${saved.length ? saved.join(', ') : 'none'}`;
+  if (skipped.length) {
+    const skipStr = skipped.map((s) => `${s.symbol} (${s.reason})`).join(', ');
+    msg += ` — skipped: ${skipStr}`;
+  }
+  setStatus(msg);
+  closeExtractEditor();
+  await refreshInventory();
 }

@@ -210,3 +210,14 @@ audio { display: block; width: 100%; margin: 0.6rem 0; }
   background: #3a3d44;
   color: var(--fg);
 }
+
+.chip-edit {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  margin-left: 0.3rem;
+  padding: 0 0.2rem;
+  font-size: 0.85em;
+}
+.chip-edit:hover { color: var(--accent); }
