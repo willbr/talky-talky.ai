@@ -53,7 +53,13 @@
         <button id="pick-sentence-btn" class="secondary">🎲 Pick sentence</button>
       </div>
       <textarea id="sentence-input" rows="3" placeholder="hello world"></textarea>
-      <button id="synth-btn">Synthesise</button>
+      <div class="synth-controls">
+        <button id="synth-btn">Synthesise</button>
+        <label class="phonemes-only">
+          <input type="checkbox" id="phonemes-only-toggle">
+          Phonemes only
+        </label>
+      </div>
       <audio id="output" controls></audio>
       <div id="skipped-list" aria-live="polite"></div>
 

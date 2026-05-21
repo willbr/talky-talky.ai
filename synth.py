@@ -14,7 +14,10 @@ def tokenise(sentence: str) -> list[str]:
     return [t for t in tokens if t]
 
 
-def synthesise(sentence: str) -> tuple[bytes | None, list[str]]:
+def synthesise(
+    sentence: str,
+    phonemes_only: bool = False,
+) -> tuple[bytes | None, list[str]]:
     """Synthesise a sentence by stitching word recordings and/or phoneme recordings.
 
     For each token in the sentence:
@@ -27,11 +30,20 @@ def synthesise(sentence: str) -> tuple[bytes | None, list[str]]:
          resolves, the word becomes a group of phoneme paths. If any phoneme
          is missing → skip the whole word (all-or-nothing).
 
+    When `phonemes_only=True`, the word-recording resolver is dropped from
+    the chain — tokens are always either ARPABET symbols or phonemised via
+    CMUdict, never matched against `inventory/<word>.wav`.
+
     Returns (wav_bytes_or_None, skipped_tokens).
     """
     tokens = tokenise(sentence)
     if not tokens:
         return None, []
+
+    if phonemes_only:
+        resolvers: list[resolver.Resolver] = [resolver.PhonemeResolver()]
+    else:
+        resolvers = resolver.RESOLVERS
 
     groups: list[list] = []
     skipped: list[str] = []
@@ -39,7 +51,7 @@ def synthesise(sentence: str) -> tuple[bytes | None, list[str]]:
     for token in tokens:
         # Pass 1: try the chain on the raw token.
         direct = None
-        for r in resolver.RESOLVERS:
+        for r in resolvers:
             direct = r.resolve(token)
             if direct is not None:
                 break
@@ -63,7 +75,7 @@ def synthesise(sentence: str) -> tuple[bytes | None, list[str]]:
         all_resolved = True
         for ph in phs:
             ph_path = None
-            for r in resolver.RESOLVERS:
+            for r in resolvers:
                 ph_path = r.resolve(ph)
                 if ph_path is not None:
                     break

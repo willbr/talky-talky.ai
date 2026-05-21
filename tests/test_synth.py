@@ -167,3 +167,32 @@ def test_synthesise_phoneme_token_directly(temp_inventory):
 
     assert wav_bytes is not None
     assert skipped == []
+
+
+def test_synthesise_phonemes_only_bypasses_word_recording(temp_inventory):
+    """With phonemes_only=True, a recorded word is ignored and the synth
+    stitches the phonemes instead — verified by output length differing from
+    the single-word concatenation."""
+    word_samples = np.ones(audio.SAMPLE_RATE * 2, dtype=np.int16) * 5000
+    audio.write_wav(temp_inventory / "hello.wav", word_samples)
+    _seed_all_phonemes_for_word(temp_inventory, "hello")
+
+    word_only, _ = synth.synthesise("hello")
+    phonemes_only, skipped = synth.synthesise("hello", phonemes_only=True)
+
+    assert skipped == []
+    assert phonemes_only is not None
+    assert phonemes_only != word_only
+
+
+def test_synthesise_phonemes_only_skips_when_phoneme_missing(temp_inventory):
+    """phonemes_only ignores the word file, so a missing phoneme means the
+    word is skipped even if a word recording exists."""
+    word_samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 5000
+    audio.write_wav(temp_inventory / "hello.wav", word_samples)
+    # Deliberately do NOT seed any phonemes.
+
+    wav_bytes, skipped = synth.synthesise("hello", phonemes_only=True)
+
+    assert wav_bytes is None
+    assert skipped == ["hello"]

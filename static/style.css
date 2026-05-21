@@ -130,6 +130,23 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   font-size: 0.9em;
 }
 
+.synth-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 0.4rem;
+}
+.synth-controls .phonemes-only {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--muted);
+  cursor: pointer;
+}
+.synth-controls .phonemes-only input { width: auto; margin: 0; }
+
 #skipped-list {
   margin-top: 0.8rem;
   display: flex;

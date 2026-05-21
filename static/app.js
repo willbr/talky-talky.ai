@@ -24,7 +24,14 @@ const els = {
   referenceStatus: document.getElementById('reference-status'),
   bookSelect: document.getElementById('book-select'),
   pickSentenceBtn: document.getElementById('pick-sentence-btn'),
+  phonemesOnlyToggle: document.getElementById('phonemes-only-toggle'),
 };
+
+const PHONEMES_ONLY_KEY = 'tt.phonemesOnly';
+els.phonemesOnlyToggle.checked = localStorage.getItem(PHONEMES_ONLY_KEY) === '1';
+els.phonemesOnlyToggle.addEventListener('change', () => {
+  localStorage.setItem(PHONEMES_ONLY_KEY, els.phonemesOnlyToggle.checked ? '1' : '0');
+});
 
 let wordCount = 0;
 let recordedPhonemeCount = 0;
@@ -316,7 +323,7 @@ async function synthesise() {
   const r = await fetch('/api/synthesize', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sentence }),
+    body: JSON.stringify({ sentence, phonemes_only: els.phonemesOnlyToggle.checked }),
   });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
