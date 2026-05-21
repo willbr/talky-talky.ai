@@ -7,6 +7,7 @@ import numpy as np
 
 import app as app_module
 import audio
+import extraction  # noqa: F401  (ensures module is importable in test env)
 import inventory
 import phonemes
 import synth
@@ -286,3 +287,52 @@ def test_phoneme_inventory_includes_example_words(client):
     # Spot-check a couple of canonical mappings
     assert examples["AA"] == "AA" or examples["AA"]  # non-empty
     assert examples["ZH"]
+
+
+def test_extract_propose_returns_audio_and_boundaries(client, tmp_path):
+    samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+    audio.write_wav(tmp_path / "hello.wav", samples)
+
+    r = client.post("/api/extract/propose", json={"word": "hello"})
+    assert r.status_code == 200
+    data = r.get_json()
+
+    assert data["word"] == "hello"
+    assert data["audio_duration_ms"] > 0
+    assert data["audio"]  # non-empty base64
+    assert len(data["phonemes"]) >= 1
+    for entry in data["phonemes"]:
+        assert "symbol" in entry
+        assert "example" in entry
+        assert "recorded" in entry
+        assert isinstance(entry["recorded"], bool)
+    assert len(data["boundaries_ms"]) == len(data["phonemes"]) + 1
+    for i in range(len(data["boundaries_ms"]) - 1):
+        assert data["boundaries_ms"][i] <= data["boundaries_ms"][i + 1]
+
+
+def test_extract_propose_404_when_word_not_recorded(client):
+    r = client.post("/api/extract/propose", json={"word": "ghost"})
+    assert r.status_code == 404
+
+
+def test_extract_propose_400_when_word_oov(client, tmp_path):
+    samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+    audio.write_wav(tmp_path / "xyzqqqzz.wav", samples)
+    r = client.post("/api/extract/propose", json={"word": "xyzqqqzz"})
+    assert r.status_code == 400
+    body = r.get_json()
+    assert "dictionary" in body["error"].lower()
+
+
+def test_extract_propose_400_when_word_missing_field(client):
+    r = client.post("/api/extract/propose", json={})
+    assert r.status_code == 400
+
+
+def test_extract_propose_normalises_word(client, tmp_path):
+    samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+    audio.write_wav(tmp_path / "hello.wav", samples)
+    r = client.post("/api/extract/propose", json={"word": "  HELLO!  "})
+    assert r.status_code == 200
+    assert r.get_json()["word"] == "hello"

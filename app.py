@@ -10,6 +10,7 @@ import numpy as np
 from flask import Flask, jsonify, render_template, request
 
 import audio
+import extraction
 import inventory
 import phonemes
 import synth
@@ -154,6 +155,45 @@ def create_app() -> Flask:
                 for s in phonemes.PHONEMES
             ]
         })
+
+    @flask_app.route("/api/extract/propose", methods=["POST"])
+    def api_extract_propose():
+        data = request.get_json(silent=True) or {}
+        word_raw = data.get("word", "")
+        word = inventory.normalise(word_raw)
+        if not word:
+            return jsonify({"error": "word is required"}), 400
+        if not inventory.has(word):
+            return jsonify({"error": "word not recorded", "word": word}), 404
+
+        phs = phonemes.word_to_phonemes(word)
+        if phs is None:
+            return jsonify({"error": "word not in dictionary", "word": word}), 400
+
+        samples, _ = audio.read_wav(inventory.path(word))
+        audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
+        boundaries_ms = extraction.propose_boundaries(samples, phs)
+        wav_bytes = inventory.path(word).read_bytes()
+        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+
+        phoneme_payload = [
+            {
+                "symbol": p,
+                "example": phonemes.PHONEME_EXAMPLES.get(p, ""),
+                "recorded": inventory.has_phoneme(p),
+            }
+            for p in phs
+        ]
+
+        log.info("extract/propose: word=%r phonemes=%d duration=%dms",
+                 word, len(phs), audio_duration_ms)
+        return jsonify({
+            "word": word,
+            "audio_duration_ms": audio_duration_ms,
+            "audio": audio_b64,
+            "phonemes": phoneme_payload,
+            "boundaries_ms": boundaries_ms,
+        }), 200
 
     @flask_app.route("/api/synthesize", methods=["POST"])
     def api_synthesize():
