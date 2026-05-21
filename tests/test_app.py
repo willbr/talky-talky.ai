@@ -598,6 +598,80 @@ def test_trim_renormalises_loudness(client, tmp_path):
     assert int(np.max(np.abs(cropped))) >= audio.PEAK_TARGET - 1
 
 
+def _seed_phoneme(tmp_path, symbol, duration_seconds=0.4, amplitude=10000):
+    (tmp_path / "phonemes").mkdir(exist_ok=True)
+    n = int(audio.SAMPLE_RATE * duration_seconds)
+    samples = np.ones(n, dtype=np.int16) * amplitude
+    audio.write_wav(tmp_path / "phonemes" / f"{symbol.lower()}.wav", samples)
+
+
+def test_phoneme_propose_returns_audio(client, tmp_path):
+    _seed_phoneme(tmp_path, "AA")
+    r = client.post("/api/phoneme/propose", json={"symbol": "AA"})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["symbol"] == "AA"
+    assert data["audio_duration_ms"] > 0
+    assert base64.b64decode(data["audio"]).startswith(b"RIFF")
+
+
+def test_phoneme_propose_404_when_not_recorded(client):
+    r = client.post("/api/phoneme/propose", json={"symbol": "AA"})
+    assert r.status_code == 404
+
+
+def test_phoneme_propose_400_for_unknown_symbol(client):
+    r = client.post("/api/phoneme/propose", json={"symbol": "QQ"})
+    assert r.status_code == 400
+
+
+def test_phoneme_trim_crops_recording(client, tmp_path):
+    n = audio.SAMPLE_RATE
+    samples = np.full(n, 100, dtype=np.int16)
+    burst_start = int(0.3 * audio.SAMPLE_RATE)
+    burst_end = int(0.5 * audio.SAMPLE_RATE)
+    samples[burst_start:burst_end] = 20000
+    (tmp_path / "phonemes").mkdir(exist_ok=True)
+    audio.write_wav(tmp_path / "phonemes" / "aa.wav", samples)
+
+    r = client.post("/api/phoneme/trim", json={
+        "symbol": "AA",
+        "start_ms": 200,
+        "end_ms": 600,
+    })
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["symbol"] == "AA"
+    assert 395 <= body["duration_ms"] <= 405
+
+    cropped, _ = audio.read_wav(tmp_path / "phonemes" / "aa.wav")
+    assert int(np.max(np.abs(cropped))) >= audio.PEAK_TARGET - 1
+
+
+def test_phoneme_trim_404_when_not_recorded(client):
+    r = client.post("/api/phoneme/trim", json={
+        "symbol": "AA", "start_ms": 0, "end_ms": 100,
+    })
+    assert r.status_code == 404
+
+
+def test_phoneme_trim_400_when_too_short(client, tmp_path):
+    _seed_phoneme(tmp_path, "AA")
+    r = client.post("/api/phoneme/trim", json={
+        "symbol": "AA", "start_ms": 0, "end_ms": 10,
+    })
+    assert r.status_code == 400
+    assert "too short" in r.get_json()["error"].lower()
+
+
+def test_phoneme_trim_400_when_inverted(client, tmp_path):
+    _seed_phoneme(tmp_path, "AA")
+    r = client.post("/api/phoneme/trim", json={
+        "symbol": "AA", "start_ms": 200, "end_ms": 100,
+    })
+    assert r.status_code == 400
+
+
 def test_sentence_record_saves_pair(client, tmp_path):
     wav = _make_wav_bytes()
     r = client.post(

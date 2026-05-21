@@ -221,6 +221,19 @@ async function refreshPhonemeInventory() {
     chip.appendChild(exEl);
 
     chip.addEventListener('click', () => armPhoneme(symbol, example));
+
+    if (recorded) {
+      const edit = document.createElement('button');
+      edit.className = 'chip-edit';
+      edit.textContent = '✎';
+      edit.title = `Trim ${symbol}`;
+      edit.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPhonemeEditor(symbol);
+      });
+      chip.appendChild(edit);
+    }
+
     if (currentPhoneme === symbol) chip.classList.add('armed');
     els.phonemeGrid.appendChild(chip);
   }
@@ -732,6 +745,7 @@ async function openExtractEditor(word) {
   }
 
   editor = {
+    mode: 'word',
     word: prop.word,
     audioBase64: prop.audio,
     audioDurationMs: prop.audio_duration_ms,
@@ -750,6 +764,53 @@ async function openExtractEditor(word) {
   };
   applyTrim();
 
+  buildEditorDom();
+  decodeWaveform();
+}
+
+async function openPhonemeEditor(symbol) {
+  closeExtractEditor();
+
+  let prop;
+  try {
+    const r = await fetch('/api/phoneme/propose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      setStatus(`Phoneme edit: ${err.error || r.statusText}`, true);
+      return;
+    }
+    prop = await r.json();
+  } catch (e) {
+    setStatus(`Phoneme edit failed: ${e.message}`, true);
+    return;
+  }
+
+  // Reuse the editor scaffolding with a single-span "phoneme" sitting
+  // across the full recording. The user drags the two outer handles to
+  // mark the trim range and clicks Save trim.
+  editor = {
+    mode: 'phoneme',
+    phonemeSymbol: prop.symbol,
+    phonemeExample: prop.example,
+    audioBase64: prop.audio,
+    audioDurationMs: prop.audio_duration_ms,
+    phonemes: [],
+    phonemeSpansMs: [{ start_ms: 0, end_ms: prop.audio_duration_ms }],
+    audioBuffer: null,
+    audioCtx: null,
+    container: null,
+    canvas: null,
+    samples: null,
+    draggingHandle: null,
+    viewStartMs: 0,
+    viewEndMs: prop.audio_duration_ms,
+    trimBtn: null,
+    trimSaveBtn: null,
+  };
   buildEditorDom();
   decodeWaveform();
 }
@@ -780,7 +841,12 @@ function buildEditorDom() {
   const header = document.createElement('div');
   header.className = 'editor-header';
   const title = document.createElement('h3');
-  title.textContent = `Extracting phonemes from "${editor.word}"`;
+  if (editor.mode === 'phoneme') {
+    const ex = editor.phonemeExample ? ` (${editor.phonemeExample})` : '';
+    title.textContent = `Trimming phoneme "${editor.phonemeSymbol}"${ex}`;
+  } else {
+    title.textContent = `Extracting phonemes from "${editor.word}"`;
+  }
 
   const playAllBtn = document.createElement('button');
   playAllBtn.className = 'play-all';
@@ -798,12 +864,6 @@ function buildEditorDom() {
   trimBtn.addEventListener('click', toggleTrim);
   editor.trimBtn = trimBtn;
 
-  const recalcBtn = document.createElement('button');
-  recalcBtn.className = 'recalc';
-  recalcBtn.textContent = 'Recalc';
-  recalcBtn.title = 'Redistribute internal boundaries by phoneme duration priors, keeping the current endpoints';
-  recalcBtn.addEventListener('click', recalcBoundaries);
-
   const dismiss = document.createElement('button');
   dismiss.className = 'dismiss';
   dismiss.textContent = '×';
@@ -813,7 +873,14 @@ function buildEditorDom() {
   controls.className = 'editor-controls';
   controls.appendChild(playAllBtn);
   controls.appendChild(trimBtn);
-  controls.appendChild(recalcBtn);
+  if (editor.mode !== 'phoneme') {
+    const recalcBtn = document.createElement('button');
+    recalcBtn.className = 'recalc';
+    recalcBtn.textContent = 'Recalc';
+    recalcBtn.title = 'Redistribute internal boundaries by phoneme duration priors, keeping the current endpoints';
+    recalcBtn.addEventListener('click', recalcBoundaries);
+    controls.appendChild(recalcBtn);
+  }
   controls.appendChild(dismiss);
 
   header.appendChild(title);
@@ -878,21 +945,25 @@ function buildEditorDom() {
 
   const actions = document.createElement('div');
   actions.className = 'actions';
-  const saveBtn = document.createElement('button');
-  saveBtn.textContent = 'Save phonemes';
-  saveBtn.className = 'save';
-  saveBtn.addEventListener('click', () => savePhonemesFromEditor());
+  if (editor.mode !== 'phoneme') {
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save phonemes';
+    saveBtn.className = 'save';
+    saveBtn.addEventListener('click', () => savePhonemesFromEditor());
+    actions.appendChild(saveBtn);
+  }
   const saveTrimBtn = document.createElement('button');
   saveTrimBtn.textContent = 'Save trim';
   saveTrimBtn.className = 'save-trim';
-  saveTrimBtn.title = 'Crop the word recording to the outer boundaries';
+  saveTrimBtn.title = editor.mode === 'phoneme'
+    ? 'Crop the phoneme recording to the outer boundaries'
+    : 'Crop the word recording to the outer boundaries';
   saveTrimBtn.addEventListener('click', () => saveTrimFromEditor());
   editor.trimSaveBtn = saveTrimBtn;
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
   cancelBtn.className = 'cancel';
   cancelBtn.addEventListener('click', closeExtractEditor);
-  actions.appendChild(saveBtn);
   actions.appendChild(saveTrimBtn);
   actions.appendChild(cancelBtn);
   container.appendChild(actions);
@@ -1133,21 +1204,28 @@ function updateTrimEnabled() {
 
 async function saveTrimFromEditor() {
   if (!editor) return;
-  const word = editor.word;
   const spans = editor.phonemeSpansMs;
   const start = spans[0].start_ms;
   const end = spans[spans.length - 1].end_ms;
+  const isPhoneme = editor.mode === 'phoneme';
+  const label = isPhoneme ? editor.phonemeSymbol : editor.word;
+
   const ok = window.confirm(
-    `Trim "${word}" to ${start}–${end} ms? This overwrites the recording.`
+    `Trim "${label}" to ${start}–${end} ms? This overwrites the recording.`
   );
   if (!ok) return;
 
+  const endpoint = isPhoneme ? '/api/phoneme/trim' : '/api/extract/trim';
+  const body = isPhoneme
+    ? { symbol: label, start_ms: start, end_ms: end }
+    : { word: label, start_ms: start, end_ms: end };
+
   let r;
   try {
-    r = await fetch('/api/extract/trim', {
+    r = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word, start_ms: start, end_ms: end }),
+      body: JSON.stringify(body),
     });
   } catch (e) {
     setStatus(`Trim failed: ${e.message}`, true);
@@ -1159,9 +1237,13 @@ async function saveTrimFromEditor() {
     return;
   }
   const { duration_ms } = await r.json();
-  setStatus(`Trimmed ${word} → ${duration_ms} ms`);
+  setStatus(`Trimmed ${label} → ${duration_ms} ms`);
   closeExtractEditor();
-  await openExtractEditor(word);
+  if (isPhoneme) {
+    await openPhonemeEditor(label);
+  } else {
+    await openExtractEditor(label);
+  }
 }
 
 async function ensureEditorAudioBuffer() {

@@ -312,6 +312,72 @@ def create_app() -> Flask:
                  word, int(start_ms), int(end_ms), new_duration_ms)
         return jsonify({"word": word, "duration_ms": new_duration_ms}), 200
 
+    @flask_app.route("/api/phoneme/propose", methods=["POST"])
+    def api_phoneme_propose():
+        data = request.get_json(silent=True) or {}
+        symbol = str(data.get("symbol", "")).strip().upper()
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        if symbol not in phonemes.PHONEMES_SET:
+            return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
+        if not inventory.has_phoneme(symbol):
+            return jsonify({"error": "phoneme not recorded", "symbol": symbol}), 404
+
+        samples, _ = audio.read_wav(inventory.phoneme_path(symbol))
+        audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
+        wav_bytes = inventory.phoneme_path(symbol).read_bytes()
+        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+
+        return jsonify({
+            "symbol": symbol,
+            "example": phonemes.PHONEME_EXAMPLES.get(symbol, ""),
+            "audio_duration_ms": audio_duration_ms,
+            "audio": audio_b64,
+        }), 200
+
+    @flask_app.route("/api/phoneme/trim", methods=["POST"])
+    def api_phoneme_trim():
+        data = request.get_json(silent=True) or {}
+        symbol = str(data.get("symbol", "")).strip().upper()
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        if symbol not in phonemes.PHONEMES_SET:
+            return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
+        if not inventory.has_phoneme(symbol):
+            return jsonify({"error": "phoneme not recorded", "symbol": symbol}), 404
+
+        start_ms = data.get("start_ms")
+        end_ms = data.get("end_ms")
+        if not isinstance(start_ms, (int, float)) or not isinstance(end_ms, (int, float)):
+            return jsonify({"error": "start_ms and end_ms are required"}), 400
+        if end_ms <= start_ms:
+            return jsonify({"error": "end_ms must be greater than start_ms"}), 400
+
+        samples, _ = audio.read_wav(inventory.phoneme_path(symbol))
+        duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
+        if start_ms < 0 or end_ms > duration_ms + 5:
+            return jsonify({"error": "trim out of range"}), 400
+
+        slice_arr = audio.slice_samples(samples, int(start_ms), int(end_ms))
+        # Phonemes are short — allow trims down to 30 ms, matching the
+        # phoneme-slice floor enforced in /api/extract/save.
+        if len(slice_arr) < int(audio.SAMPLE_RATE * 0.030):
+            return jsonify({"error": "trim too short"}), 400
+
+        normalised = audio.peak_normalise(slice_arr)
+        out = io.BytesIO()
+        with wave.open(out, "wb") as w:
+            w.setnchannels(audio.CHANNELS)
+            w.setsampwidth(audio.SAMPLE_WIDTH)
+            w.setframerate(audio.SAMPLE_RATE)
+            w.writeframes(normalised.tobytes())
+        inventory.save_phoneme(symbol, out.getvalue())
+
+        new_duration_ms = int(len(normalised) * 1000 / audio.SAMPLE_RATE)
+        log.info("phoneme/trim: symbol=%r %d-%dms -> %dms",
+                 symbol, int(start_ms), int(end_ms), new_duration_ms)
+        return jsonify({"symbol": symbol, "duration_ms": new_duration_ms}), 200
+
     @flask_app.route("/api/sentence/record", methods=["POST"])
     def api_sentence_record():
         sentence = request.form.get("sentence", "").strip()
