@@ -126,3 +126,87 @@ audio { display: block; width: 100%; margin: 0.6rem 0; }
 .phoneme-chip.armed {
   border-color: var(--accent);
 }
+
+#phoneme-editor {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  margin: 1rem 0;
+  padding: 1rem;
+}
+
+#phoneme-editor .editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+
+#phoneme-editor .editor-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+#phoneme-editor .dismiss {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  font-size: 1.3rem;
+  cursor: pointer;
+  padding: 0 0.4rem;
+}
+
+#phoneme-editor canvas {
+  display: block;
+  width: 100%;
+  height: 120px;
+  background: #1a1b1e;
+  border-radius: 4px;
+  cursor: ew-resize;
+  margin-bottom: 0.6rem;
+}
+
+#phoneme-editor .row {
+  display: grid;
+  grid-template-columns: 1.5rem 2.5rem 4rem 2rem 1fr;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.25rem 0;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+}
+
+#phoneme-editor .row .ex {
+  font-family: system-ui, sans-serif;
+  font-style: italic;
+  color: var(--muted);
+}
+
+#phoneme-editor .row .duration {
+  color: var(--muted);
+}
+
+#phoneme-editor .row .note {
+  color: var(--muted);
+  font-size: 0.85em;
+  justify-self: end;
+}
+
+#phoneme-editor .row .play {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+}
+
+#phoneme-editor .actions {
+  margin-top: 0.8rem;
+  display: flex;
+  gap: 0.4rem;
+}
+
+#phoneme-editor .actions .cancel {
+  background: #3a3d44;
+  color: var(--fg);
+}

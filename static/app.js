@@ -14,6 +14,7 @@ const els = {
   output: document.getElementById('output'),
   skippedList: document.getElementById('skipped-list'),
   phonemeGrid: document.getElementById('phoneme-grid'),
+  recordPane: document.getElementById('record-pane'),
 };
 
 let audioCtx = null;
@@ -21,6 +22,9 @@ let workletNode = null;
 let mediaStream = null;
 let currentWavBlob = null;
 let currentPhoneme = null;   // null => recording for a word; non-null => recording for this phoneme
+
+// Phoneme editor state — null when closed.
+let editor = null;
 
 async function ensureAudio() {
   if (audioCtx) return;
@@ -311,3 +315,193 @@ els.wordInput.addEventListener('input', () => {
 
 refreshInventory();
 setButtons({ record: true, stop: false, save: false, discard: false });
+
+async function openExtractEditor(word) {
+  closeExtractEditor();
+
+  let prop;
+  try {
+    const r = await fetch('/api/extract/propose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      setStatus(`Extract: ${err.error || r.statusText}`, true);
+      return;
+    }
+    prop = await r.json();
+  } catch (e) {
+    setStatus(`Extract failed: ${e.message}`, true);
+    return;
+  }
+
+  editor = {
+    word: prop.word,
+    audioBase64: prop.audio,
+    audioDurationMs: prop.audio_duration_ms,
+    phonemes: prop.phonemes,
+    boundariesMs: prop.boundaries_ms.slice(),
+    audioBuffer: null,
+    audioCtx: null,
+    container: null,
+    canvas: null,
+    samples: null,
+    draggingI: null,
+  };
+
+  buildEditorDom();
+  decodeWaveform();
+}
+
+function closeExtractEditor() {
+  if (!editor) return;
+  if (editor.container && editor.container.parentNode) {
+    editor.container.parentNode.removeChild(editor.container);
+  }
+  editor = null;
+}
+
+function buildEditorDom() {
+  const container = document.createElement('div');
+  container.id = 'phoneme-editor';
+
+  const header = document.createElement('div');
+  header.className = 'editor-header';
+  const title = document.createElement('h3');
+  title.textContent = `Extracting phonemes from "${editor.word}"`;
+  const dismiss = document.createElement('button');
+  dismiss.className = 'dismiss';
+  dismiss.textContent = '×';
+  dismiss.addEventListener('click', closeExtractEditor);
+  header.appendChild(title);
+  header.appendChild(dismiss);
+  container.appendChild(header);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 800;
+  canvas.height = 120;
+  container.appendChild(canvas);
+  editor.canvas = canvas;
+
+  for (let i = 0; i < editor.phonemes.length; i++) {
+    const ph = editor.phonemes[i];
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.dataset.index = String(i);
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !ph.recorded;
+    checkbox.dataset.index = String(i);
+
+    const sym = document.createElement('span');
+    sym.className = 'symbol';
+    sym.textContent = ph.symbol;
+
+    const ex = document.createElement('span');
+    ex.className = 'ex';
+    ex.textContent = ph.example;
+
+    const play = document.createElement('button');
+    play.className = 'play';
+    play.textContent = '▶';
+    play.title = `Play ${ph.symbol}`;
+
+    const duration = document.createElement('span');
+    duration.className = 'duration';
+    duration.textContent = `${editor.boundariesMs[i + 1] - editor.boundariesMs[i]} ms`;
+
+    row.appendChild(checkbox);
+    row.appendChild(sym);
+    row.appendChild(ex);
+    row.appendChild(play);
+    row.appendChild(duration);
+
+    if (ph.recorded) {
+      const note = document.createElement('span');
+      note.className = 'note';
+      note.textContent = 'already recorded';
+      row.appendChild(note);
+    }
+
+    container.appendChild(row);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  const saveBtn = document.createElement('button');
+  saveBtn.textContent = 'Save phonemes';
+  saveBtn.className = 'save';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.className = 'cancel';
+  cancelBtn.addEventListener('click', closeExtractEditor);
+  actions.appendChild(saveBtn);
+  actions.appendChild(cancelBtn);
+  container.appendChild(actions);
+
+  els.recordPane.insertAdjacentElement('afterend', container);
+  editor.container = container;
+}
+
+async function decodeWaveform() {
+  if (!editor) return;
+  const bin = atob(editor.audioBase64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  // Parse WAV header manually — samples are little-endian int16 starting at offset 44.
+  const samplesArr = new Int16Array(bytes.buffer, 44, (bytes.length - 44) / 2);
+  editor.samples = samplesArr;
+  drawWaveform();
+}
+
+function drawWaveform() {
+  if (!editor || !editor.canvas || !editor.samples) return;
+  const canvas = editor.canvas;
+  const ctx = canvas.getContext('2d');
+  const cssW = canvas.clientWidth;
+  if (cssW > 0 && canvas.width !== cssW) {
+    canvas.width = cssW;
+  }
+  const w = canvas.width;
+  const h = canvas.height;
+  const mid = h / 2;
+
+  ctx.fillStyle = '#1a1b1e';
+  ctx.fillRect(0, 0, w, h);
+
+  const samples = editor.samples;
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const a = Math.abs(samples[i]);
+    if (a > peak) peak = a;
+  }
+  const threshold = peak * 0.02;
+  const bucketSize = samples.length / w;
+
+  for (let x = 0; x < w; x++) {
+    const start = Math.floor(x * bucketSize);
+    const end = Math.floor((x + 1) * bucketSize);
+    let bucketPeak = 0;
+    for (let i = start; i < end; i++) {
+      const a = Math.abs(samples[i]);
+      if (a > bucketPeak) bucketPeak = a;
+    }
+    const y = (bucketPeak / 32768) * (h / 2);
+    const isLoud = bucketPeak >= threshold;
+    ctx.fillStyle = isLoud ? '#8fdf9b' : '#4a4d54';
+    ctx.fillRect(x, mid - y, 1, Math.max(1, y * 2));
+  }
+
+  ctx.strokeStyle = '#4ea8de';
+  ctx.lineWidth = 2;
+  for (const b of editor.boundariesMs) {
+    const x = (b / editor.audioDurationMs) * w;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+  }
+}
