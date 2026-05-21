@@ -86,6 +86,34 @@ def save_sentence(text: str, wav_bytes: bytes) -> str:
     return sid
 
 
+def find_sentence_by_text(text: str) -> Path | None:
+    """Return the path to the most recent reference WAV matching `text`
+    by normalised content (lowercase, punctuation stripped, whitespace
+    collapsed — same rule the synth tokeniser uses). None if no match.
+    """
+    needle = normalise(text)
+    if not needle:
+        return None
+    d = _sentence_dir()
+    if not d.is_dir():
+        return None
+    matches: list[Path] = []
+    for txt in d.glob("*.txt"):
+        try:
+            if normalise(txt.read_text(encoding="utf-8")) == needle:
+                wav = txt.with_suffix(".wav")
+                if wav.exists():
+                    matches.append(wav)
+        except OSError:
+            continue
+    if not matches:
+        return None
+    # Latest takes priority — IDs are UTC timestamps so lexicographic sort
+    # is chronological.
+    matches.sort(key=lambda p: p.stem)
+    return matches[-1]
+
+
 def list_sentences() -> list[dict]:
     d = _sentence_dir()
     if not d.is_dir():

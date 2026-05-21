@@ -33,6 +33,9 @@ const els = {
   outputSpec: document.getElementById('output-spec'),
   compareOutputNormalSpec: document.getElementById('compare-output-normal-spec'),
   compareOutputPhonemesSpec: document.getElementById('compare-output-phonemes-spec'),
+  referenceOutput: document.getElementById('reference-output'),
+  referenceOutputAudio: document.getElementById('reference-output-audio'),
+  referenceOutputSpec: document.getElementById('reference-output-spec'),
 };
 
 const currentInventorySet = new Set();
@@ -395,6 +398,7 @@ async function synthesise() {
 
   renderRenderedWords(sentence, skipped);
   renderSkipped(skipped);
+  renderReferenceForSentence(sentence);
 }
 
 async function compareSynth() {
@@ -431,6 +435,35 @@ async function compareSynth() {
   // Skip chips: union of both modes (anything that failed somewhere).
   const skippedUnion = Array.from(new Set([...normal.skipped, ...phonemes.skipped]));
   renderSkipped(skippedUnion);
+  renderReferenceForSentence(sentence);
+}
+
+async function renderReferenceForSentence(sentence) {
+  let result;
+  try {
+    const r = await fetch('/api/sentence/audio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sentence }),
+    });
+    if (!r.ok) {
+      els.referenceOutput.hidden = true;
+      return;
+    }
+    result = await r.json();
+  } catch (e) {
+    els.referenceOutput.hidden = true;
+    return;
+  }
+  if (!result.found) {
+    els.referenceOutput.hidden = true;
+    return;
+  }
+  els.referenceOutput.hidden = false;
+  setAudioFromBase64(els.referenceOutputAudio, result.audio);
+  // Reference recordings have no word-level annotation — pass an empty
+  // units list so the spectrogram renders without label decorations.
+  drawSpectrogram(els.referenceOutputSpec, els.referenceOutputAudio, result.spectrogram, []);
 }
 
 function drawSpectrogram(canvas, audioEl, spec, units) {
@@ -456,7 +489,9 @@ function drawSpectrogram(canvas, audioEl, spec, units) {
   const h = canvas.height;
   const wordLabelH = 16;
   const phonemeLabelH = 14;
-  const labelH = wordLabelH + phonemeLabelH;
+  const hasUnits = !!(units && units.length);
+  const hasPhonemes = hasUnits && units.some((u) => u.phonemes && u.phonemes.length);
+  const labelH = hasUnits ? wordLabelH + (hasPhonemes ? phonemeLabelH : 0) : 0;
   const specH = h - labelH;
 
   const bin = atob(spec.data);

@@ -409,6 +409,35 @@ def create_app() -> Flask:
     def api_sentences():
         return jsonify({"sentences": inventory.list_sentences()})
 
+    @flask_app.route("/api/sentence/audio", methods=["POST"])
+    def api_sentence_audio():
+        data = request.get_json(silent=True) or {}
+        sentence = data.get("sentence")
+        if not isinstance(sentence, str) or not sentence.strip():
+            return jsonify({"error": "sentence is required"}), 400
+
+        wav_path = inventory.find_sentence_by_text(sentence)
+        if wav_path is None:
+            return jsonify({"found": False}), 200
+
+        samples, _ = audio.read_wav(wav_path)
+        audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
+        wav_bytes = wav_path.read_bytes()
+        spec = spectrogram.compute(samples)
+        return jsonify({
+            "found": True,
+            "id": wav_path.stem,
+            "audio": base64.b64encode(wav_bytes).decode("ascii"),
+            "audio_duration_ms": audio_duration_ms,
+            "spectrogram": {
+                "data": base64.b64encode(spec["data"]).decode("ascii"),
+                "n_frames": spec["n_frames"],
+                "n_freqs": spec["n_freqs"],
+                "hop_ms": spec["hop_ms"],
+                "duration_ms": spec["duration_ms"],
+            },
+        }), 200
+
     @flask_app.route("/api/books")
     def api_books():
         return jsonify({"books": books.list_books()})

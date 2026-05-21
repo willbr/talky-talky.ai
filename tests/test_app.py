@@ -664,6 +664,36 @@ def test_phoneme_trim_400_when_too_short(client, tmp_path):
     assert "too short" in r.get_json()["error"].lower()
 
 
+def test_sentence_audio_returns_match(client, tmp_path):
+    # Seed a reference recording on disk in the format save_sentence uses.
+    (tmp_path / "sentences").mkdir(exist_ok=True)
+    samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+    audio.write_wav(tmp_path / "sentences" / "ref1.wav", samples)
+    (tmp_path / "sentences" / "ref1.txt").write_text("Hello, world!", encoding="utf-8")
+
+    # Looked up by normalised text — punctuation/case differences match.
+    r = client.post("/api/sentence/audio", json={"sentence": "hello world"})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["found"] is True
+    assert data["id"] == "ref1"
+    assert base64.b64decode(data["audio"]).startswith(b"RIFF")
+    assert data["spectrogram"]["n_frames"] > 0
+    assert data["spectrogram"]["n_freqs"] == 257
+
+
+def test_sentence_audio_returns_not_found(client, tmp_path):
+    (tmp_path / "sentences").mkdir(exist_ok=True)
+    r = client.post("/api/sentence/audio", json={"sentence": "nobody recorded this"})
+    assert r.status_code == 200
+    assert r.get_json() == {"found": False}
+
+
+def test_sentence_audio_400_when_sentence_missing(client):
+    r = client.post("/api/sentence/audio", json={})
+    assert r.status_code == 400
+
+
 def test_phoneme_trim_400_when_inverted(client, tmp_path):
     _seed_phoneme(tmp_path, "AA")
     r = client.post("/api/phoneme/trim", json={
