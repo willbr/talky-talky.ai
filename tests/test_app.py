@@ -480,3 +480,50 @@ def test_extract_save_normalises_word(client, tmp_path):
         "save": [True] * len(prop["phonemes"]),
     })
     assert r.status_code == 200
+
+
+def test_sentence_record_saves_pair(client, tmp_path):
+    wav = _make_wav_bytes()
+    r = client.post(
+        "/api/sentence/record",
+        data={"sentence": "hello world", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 200
+    sid = r.get_json()["id"]
+    assert (tmp_path / "sentences" / f"{sid}.wav").exists()
+    assert (tmp_path / "sentences" / f"{sid}.txt").read_text(encoding="utf-8") == "hello world"
+
+
+def test_sentence_record_rejects_empty_sentence(client):
+    wav = _make_wav_bytes()
+    r = client.post(
+        "/api/sentence/record",
+        data={"sentence": "  ", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+
+
+def test_sentence_record_rejects_wrong_sample_rate(client):
+    wav = _make_wav_bytes(sample_rate=44100)
+    r = client.post(
+        "/api/sentence/record",
+        data={"sentence": "hi", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+
+
+def test_sentences_list(client, tmp_path):
+    wav = _make_wav_bytes()
+    client.post(
+        "/api/sentence/record",
+        data={"sentence": "hello", "audio": (io.BytesIO(wav), "audio.wav")},
+        content_type="multipart/form-data",
+    )
+    r = client.get("/api/sentences")
+    assert r.status_code == 200
+    data = r.get_json()
+    assert len(data["sentences"]) == 1
+    assert data["sentences"][0]["text"] == "hello"

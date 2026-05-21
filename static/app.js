@@ -3,7 +3,6 @@ const SAMPLE_RATE = 22050;
 const els = {
   wordInput: document.getElementById('word-input'),
   recordBtn: document.getElementById('record-btn'),
-  stopBtn: document.getElementById('stop-btn'),
   saveBtn: document.getElementById('save-btn'),
   discardBtn: document.getElementById('discard-btn'),
   preview: document.getElementById('preview'),
@@ -15,13 +14,44 @@ const els = {
   skippedList: document.getElementById('skipped-list'),
   phonemeGrid: document.getElementById('phoneme-grid'),
   recordPane: document.getElementById('record-pane'),
+  statusStrip: document.getElementById('status-strip'),
+  tabBtns: document.querySelectorAll('.tab-btn'),
+  tabPanes: document.querySelectorAll('.tab-pane'),
+  recordRefBtn: document.getElementById('record-ref-btn'),
+  saveRefBtn: document.getElementById('save-ref-btn'),
+  discardRefBtn: document.getElementById('discard-ref-btn'),
+  referencePreview: document.getElementById('reference-preview'),
+  referenceStatus: document.getElementById('reference-status'),
+  bookSelect: document.getElementById('book-select'),
+  pickSentenceBtn: document.getElementById('pick-sentence-btn'),
 };
+
+let wordCount = 0;
+let recordedPhonemeCount = 0;
+let totalPhonemeCount = 0;
+
+function updateStatusStrip() {
+  els.statusStrip.textContent =
+    `${wordCount} word${wordCount === 1 ? '' : 's'} · ${recordedPhonemeCount}/${totalPhonemeCount} phonemes`;
+}
+
+function activateTab(tabId) {
+  for (const b of els.tabBtns) b.classList.toggle('active', b.dataset.tab === tabId);
+  for (const p of els.tabPanes) p.classList.toggle('active', p.id === tabId);
+}
+
+for (const btn of els.tabBtns) {
+  btn.addEventListener('click', () => activateTab(btn.dataset.tab));
+}
 
 let audioCtx = null;
 let workletNode = null;
 let mediaStream = null;
 let currentWavBlob = null;
 let currentPhoneme = null;   // null => recording for a word; non-null => recording for this phoneme
+let isRecording = false;
+let currentRefBlob = null;
+let isRecordingRef = false;
 
 // Phoneme editor state — null when closed.
 let editor = null;
@@ -40,7 +70,7 @@ async function startRecording() {
   source.connect(workletNode);
   workletNode.port.postMessage('start');
   setStatus('recording…');
-  setButtons({ record: false, stop: true, save: false, discard: false });
+  setButtons({ recording: true, hasWav: false });
 }
 
 function stopRecording() {
@@ -104,11 +134,11 @@ function setStatus(text, isError = false) {
   els.recordStatus.style.color = isError ? 'var(--error)' : 'var(--muted)';
 }
 
-function setButtons({ record, stop, save, discard }) {
-  els.recordBtn.disabled = !record;
-  els.stopBtn.disabled = !stop;
-  els.saveBtn.disabled = !save;
-  els.discardBtn.disabled = !discard;
+function setButtons({ recording, hasWav }) {
+  els.recordBtn.textContent = recording ? '■ Stop' : '● Record';
+  els.recordBtn.disabled = false;
+  els.saveBtn.disabled = !hasWav;
+  els.discardBtn.disabled = !hasWav;
 }
 
 async function refreshInventory() {
@@ -118,6 +148,8 @@ async function refreshInventory() {
 async function refreshWordInventory() {
   const r = await fetch('/api/inventory');
   const { words } = await r.json();
+  wordCount = words.length;
+  updateStatusStrip();
   els.inventoryChips.innerHTML = '';
   for (const w of words) {
     const chip = document.createElement('span');
@@ -143,6 +175,9 @@ async function refreshWordInventory() {
 async function refreshPhonemeInventory() {
   const r = await fetch('/api/phoneme-inventory');
   const { phonemes } = await r.json();
+  totalPhonemeCount = phonemes.length;
+  recordedPhonemeCount = phonemes.filter((p) => p.recorded).length;
+  updateStatusStrip();
   els.phonemeGrid.innerHTML = '';
   for (const { symbol, example, recorded } of phonemes) {
     const chip = document.createElement('span');
@@ -187,28 +222,31 @@ function disarmPhoneme() {
 }
 
 els.recordBtn.addEventListener('click', async () => {
+  if (isRecording) {
+    isRecording = false;
+    const floats = await stopRecording();
+    const int16 = floatsToInt16(floats);
+    currentWavBlob = encodeWav(int16, SAMPLE_RATE);
+    els.preview.src = URL.createObjectURL(currentWavBlob);
+    setStatus(`captured ${(floats.length / SAMPLE_RATE).toFixed(2)}s — review then Save`);
+    setButtons({ recording: false, hasWav: true });
+    return;
+  }
   try {
     await startRecording();
+    isRecording = true;
   } catch (err) {
+    isRecording = false;
     setStatus('mic permission denied or unavailable', true);
-    setButtons({ record: true, stop: false, save: false, discard: false });
+    setButtons({ recording: false, hasWav: false });
   }
-});
-
-els.stopBtn.addEventListener('click', async () => {
-  const floats = await stopRecording();
-  const int16 = floatsToInt16(floats);
-  currentWavBlob = encodeWav(int16, SAMPLE_RATE);
-  els.preview.src = URL.createObjectURL(currentWavBlob);
-  setStatus(`captured ${(floats.length / SAMPLE_RATE).toFixed(2)}s — review then Save`);
-  setButtons({ record: true, stop: false, save: true, discard: true });
 });
 
 els.discardBtn.addEventListener('click', () => {
   currentWavBlob = null;
   els.preview.removeAttribute('src');
   setStatus('discarded');
-  setButtons({ record: true, stop: false, save: false, discard: false });
+  setButtons({ recording: false, hasWav: false });
 });
 
 async function saveWord(word, blob) {
@@ -267,7 +305,7 @@ els.saveBtn.addEventListener('click', async () => {
 
   currentWavBlob = null;
   els.preview.removeAttribute('src');
-  setButtons({ record: true, stop: false, save: false, discard: false });
+  setButtons({ recording: false, hasWav: false });
   await refreshInventory();
 });
 
@@ -306,9 +344,8 @@ function renderSkipped(skipped) {
   if (!skipped.length) return;
 
   const label = document.createElement('span');
-  label.textContent = 'Skipped (click to record):';
-  label.style.color = 'var(--muted)';
-  label.style.marginRight = '0.4rem';
+  label.className = 'skipped-label';
+  label.textContent = `Skipped — click to record (${skipped.length}):`;
   els.skippedList.appendChild(label);
 
   for (const w of skipped) {
@@ -316,6 +353,7 @@ function renderSkipped(skipped) {
     chip.className = 'chip missing';
     chip.textContent = w;
     chip.addEventListener('click', () => {
+      activateTab('train-tab');
       els.wordInput.value = w;
       els.wordInput.focus();
     });
@@ -325,12 +363,119 @@ function renderSkipped(skipped) {
 
 els.synthBtn.addEventListener('click', synthesise);
 
+function setRefStatus(text, isError = false) {
+  els.referenceStatus.textContent = text;
+  els.referenceStatus.style.color = isError ? 'var(--error)' : 'var(--muted)';
+}
+
+function setRefButtons({ recording, hasWav }) {
+  els.recordRefBtn.textContent = recording ? '■ Stop' : '● Record reference';
+  els.recordRefBtn.disabled = false;
+  els.saveRefBtn.disabled = !hasWav;
+  els.discardRefBtn.disabled = !hasWav;
+}
+
+els.recordRefBtn.addEventListener('click', async () => {
+  if (isRecordingRef) {
+    isRecordingRef = false;
+    const floats = await stopRecording();
+    const int16 = floatsToInt16(floats);
+    currentRefBlob = encodeWav(int16, SAMPLE_RATE);
+    els.referencePreview.src = URL.createObjectURL(currentRefBlob);
+    setRefStatus(`captured ${(floats.length / SAMPLE_RATE).toFixed(2)}s — review then Save`);
+    setRefButtons({ recording: false, hasWav: true });
+    return;
+  }
+  const sentence = els.sentenceInput.value.trim();
+  if (!sentence) {
+    setRefStatus('type a sentence first', true);
+    return;
+  }
+  try {
+    await startRecording();
+    isRecordingRef = true;
+    setRefStatus('recording…');
+    setRefButtons({ recording: true, hasWav: false });
+  } catch (err) {
+    isRecordingRef = false;
+    setRefStatus('mic permission denied or unavailable', true);
+    setRefButtons({ recording: false, hasWav: false });
+  }
+});
+
+els.discardRefBtn.addEventListener('click', () => {
+  currentRefBlob = null;
+  els.referencePreview.removeAttribute('src');
+  setRefStatus('discarded');
+  setRefButtons({ recording: false, hasWav: false });
+});
+
+els.saveRefBtn.addEventListener('click', async () => {
+  if (!currentRefBlob) return;
+  const sentence = els.sentenceInput.value.trim();
+  if (!sentence) {
+    setRefStatus('sentence is empty', true);
+    return;
+  }
+  const form = new FormData();
+  form.append('sentence', sentence);
+  form.append('audio', currentRefBlob, 'audio.wav');
+  let r;
+  try {
+    r = await fetch('/api/sentence/record', { method: 'POST', body: form });
+  } catch (e) {
+    setRefStatus(`save failed: ${e.message}`, true);
+    return;
+  }
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setRefStatus(`save failed: ${err.error || r.statusText}`, true);
+    return;
+  }
+  const { id } = await r.json();
+  setRefStatus(`saved reference ${id}`);
+  currentRefBlob = null;
+  els.referencePreview.removeAttribute('src');
+  setRefButtons({ recording: false, hasWav: false });
+});
+
+setRefButtons({ recording: false, hasWav: false });
+
 els.wordInput.addEventListener('input', () => {
   if (currentPhoneme && els.wordInput.value.trim()) disarmPhoneme();
 });
 
+async function refreshBooks() {
+  const r = await fetch('/api/books');
+  const { books } = await r.json();
+  els.bookSelect.innerHTML = '';
+  const any = document.createElement('option');
+  any.value = 'any';
+  any.textContent = 'any';
+  els.bookSelect.appendChild(any);
+  for (const b of books) {
+    const opt = document.createElement('option');
+    opt.value = b;
+    opt.textContent = b.replace(/-/g, ' ');
+    els.bookSelect.appendChild(opt);
+  }
+  els.pickSentenceBtn.disabled = books.length === 0;
+}
+
+els.pickSentenceBtn.addEventListener('click', async () => {
+  const r = await fetch('/api/books/sample', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ book: els.bookSelect.value }),
+  });
+  if (!r.ok) return;
+  const { sentence } = await r.json();
+  els.sentenceInput.value = sentence;
+});
+
 refreshInventory();
-setButtons({ record: true, stop: false, save: false, discard: false });
+refreshBooks();
+setButtons({ recording: false, hasWav: false });
 
 async function openExtractEditor(word) {
   closeExtractEditor();
@@ -369,9 +514,20 @@ async function openExtractEditor(word) {
     viewEndMs: prop.audio_duration_ms,
     trimBtn: null,
   };
+  applyTrim();
 
   buildEditorDom();
   decodeWaveform();
+}
+
+function applyTrim() {
+  if (!editor) return;
+  const first = editor.boundariesMs[0];
+  const last = editor.boundariesMs[editor.boundariesMs.length - 1];
+  const span = Math.max(20, last - first);
+  const margin = Math.round(span * 0.05);
+  editor.viewStartMs = Math.max(0, first - margin);
+  editor.viewEndMs = Math.min(editor.audioDurationMs, last + margin);
 }
 
 function closeExtractEditor() {
@@ -390,10 +546,17 @@ function buildEditorDom() {
   header.className = 'editor-header';
   const title = document.createElement('h3');
   title.textContent = `Extracting phonemes from "${editor.word}"`;
+
+  const playAllBtn = document.createElement('button');
+  playAllBtn.className = 'play-all';
+  playAllBtn.textContent = '▶ Play';
+  playAllBtn.title = 'Play the entire recording';
+  playAllBtn.addEventListener('click', () => playSlice(0, editor.audioDurationMs));
+
   const trimBtn = document.createElement('button');
   trimBtn.className = 'trim';
-  trimBtn.textContent = 'Trim';
-  trimBtn.title = 'Zoom canvas to the current boundary selection';
+  trimBtn.textContent = 'Fit';
+  trimBtn.title = 'Toggle between trimmed-to-selection view and the full recording';
   trimBtn.addEventListener('click', toggleTrim);
   editor.trimBtn = trimBtn;
 
@@ -410,6 +573,7 @@ function buildEditorDom() {
 
   const controls = document.createElement('div');
   controls.className = 'editor-controls';
+  controls.appendChild(playAllBtn);
   controls.appendChild(trimBtn);
   controls.appendChild(recalcBtn);
   controls.appendChild(dismiss);
@@ -599,13 +763,7 @@ function toggleTrim() {
     editor.viewEndMs = editor.audioDurationMs;
     if (editor.trimBtn) editor.trimBtn.textContent = 'Trim';
   } else {
-    const first = editor.boundariesMs[0];
-    const last = editor.boundariesMs[editor.boundariesMs.length - 1];
-    // Add a small margin (5% of the loud span) so handles aren't right at the edges.
-    const span = Math.max(20, last - first);
-    const margin = Math.round(span * 0.05);
-    editor.viewStartMs = Math.max(0, first - margin);
-    editor.viewEndMs = Math.min(editor.audioDurationMs, last + margin);
+    applyTrim();
     if (editor.trimBtn) editor.trimBtn.textContent = 'Fit';
   }
   drawWaveform();

@@ -81,8 +81,8 @@ The ✎ icon on each word chip re-opens the editor later.
 
 ## todo
 
-- use whisper.cpp to help with the recorded wave files
-- input paragraph that uses all phonemes and can be cut up
+- allow multiple copies of words
+- allow multiple copies of phonemes
 - /init
 - use https://github.com/tinygrad/tinygrad
 - use tinygrad webgpu

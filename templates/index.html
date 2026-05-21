@@ -9,14 +9,15 @@
   <header>
     <h1>talky-talky.ai</h1>
     <p class="tag">basic concatenative TTS</p>
+    <p id="status-strip" aria-live="polite"></p>
   </header>
 
-  <section id="inventory-bar">
-    <h2>Inventory</h2>
-    <div id="inventory-chips" aria-live="polite"></div>
-  </section>
+  <nav class="tabs" role="tablist">
+    <button class="tab-btn active" data-tab="train-tab" role="tab">Train</button>
+    <button class="tab-btn" data-tab="speak-tab" role="tab">Speak</button>
+  </nav>
 
-  <main>
+  <div id="train-tab" class="tab-pane active" role="tabpanel">
     <section id="record-pane">
       <h2>Record a word</h2>
       <label>Word
@@ -24,7 +25,6 @@
       </label>
       <div class="controls">
         <button id="record-btn">● Record</button>
-        <button id="stop-btn" disabled>■ Stop</button>
         <button id="save-btn" disabled>Save</button>
         <button id="discard-btn" disabled>Discard</button>
       </div>
@@ -32,20 +32,42 @@
       <p id="record-status" role="status"></p>
     </section>
 
+    <section id="inventory-bar">
+      <h2>Word inventory</h2>
+      <div id="inventory-chips" aria-live="polite"></div>
+    </section>
+
+    <section id="phoneme-pane">
+      <h2>Phoneme inventory</h2>
+      <p class="hint">Click a chip to record that phoneme. Green = recorded, red = not yet.</p>
+      <div id="phoneme-grid" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <div id="speak-tab" class="tab-pane" role="tabpanel">
     <section id="synth-pane">
       <h2>Synthesise a sentence</h2>
+      <div class="book-picker">
+        <label for="book-select">From book:</label>
+        <select id="book-select"><option value="any">any</option></select>
+        <button id="pick-sentence-btn" class="secondary">🎲 Pick sentence</button>
+      </div>
       <textarea id="sentence-input" rows="3" placeholder="hello world"></textarea>
       <button id="synth-btn">Synthesise</button>
       <audio id="output" controls></audio>
       <div id="skipped-list" aria-live="polite"></div>
-    </section>
-  </main>
 
-  <section id="phoneme-pane">
-    <h2>Phoneme inventory</h2>
-    <p class="hint">Click a chip to record that phoneme. Green = recorded, red = not yet.</p>
-    <div id="phoneme-grid" aria-live="polite"></div>
-  </section>
+      <h3>Reference recording</h3>
+      <p class="hint">Record yourself saying the same sentence — saved with the text for later use as training data.</p>
+      <div class="controls">
+        <button id="record-ref-btn">● Record reference</button>
+        <button id="save-ref-btn" disabled>Save</button>
+        <button id="discard-ref-btn" disabled>Discard</button>
+      </div>
+      <audio id="reference-preview" controls></audio>
+      <p id="reference-status" role="status"></p>
+    </section>
+  </div>
 
   <script src="{{ url_for('static', filename='app.js') }}" type="module"></script>
 </body>

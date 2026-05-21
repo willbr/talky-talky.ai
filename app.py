@@ -10,6 +10,7 @@ import numpy as np
 from flask import Flask, jsonify, render_template, request
 
 import audio
+import books
 import extraction
 import inventory
 import phonemes
@@ -259,6 +260,50 @@ def create_app() -> Flask:
 
         log.info("extract/save: word=%r saved=%s skipped=%s", word, saved, skipped)
         return jsonify({"saved": saved, "skipped": skipped}), 200
+
+    @flask_app.route("/api/sentence/record", methods=["POST"])
+    def api_sentence_record():
+        sentence = request.form.get("sentence", "").strip()
+        if not sentence:
+            return jsonify({"error": "sentence is required"}), 400
+
+        audio_file = request.files.get("audio")
+        if audio_file is None:
+            return jsonify({"error": "missing audio field"}), 400
+
+        raw = audio_file.read()
+        try:
+            with wave.open(io.BytesIO(raw), "rb") as r:
+                rate = r.getframerate()
+                channels = r.getnchannels()
+                sampwidth = r.getsampwidth()
+        except wave.Error as e:
+            log.warning("sentence/record: invalid WAV: %s", e)
+            return jsonify({"error": "invalid WAV file"}), 400
+
+        if rate != audio.SAMPLE_RATE or channels != audio.CHANNELS or sampwidth != audio.SAMPLE_WIDTH:
+            return jsonify({"error": "expected 16-bit mono PCM at 22050 Hz"}), 400
+
+        sid = inventory.save_sentence(sentence, raw)
+        log.info("sentence/record: saved id=%s text=%r", sid, sentence)
+        return jsonify({"id": sid}), 200
+
+    @flask_app.route("/api/sentences")
+    def api_sentences():
+        return jsonify({"sentences": inventory.list_sentences()})
+
+    @flask_app.route("/api/books")
+    def api_books():
+        return jsonify({"books": books.list_books()})
+
+    @flask_app.route("/api/books/sample", methods=["POST"])
+    def api_books_sample():
+        data = request.get_json(silent=True) or {}
+        result = books.sample_sentence(data.get("book"))
+        if result is None:
+            return jsonify({"error": "no sentence available"}), 404
+        book, sentence = result
+        return jsonify({"book": book, "sentence": sentence}), 200
 
     @flask_app.route("/api/synthesize", methods=["POST"])
     def api_synthesize():

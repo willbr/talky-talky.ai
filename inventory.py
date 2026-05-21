@@ -66,3 +66,34 @@ def list_recorded_phonemes() -> list[str]:
     if not d.is_dir():
         return []
     return sorted(p.stem.upper() for p in d.glob("*.wav"))
+
+
+SENTENCE_SUBDIR = "sentences"
+
+
+def _sentence_dir() -> Path:
+    return INVENTORY_DIR / SENTENCE_SUBDIR
+
+
+def save_sentence(text: str, wav_bytes: bytes) -> str:
+    """Persist a (text, audio) pair for future DL training. Returns the id."""
+    from datetime import datetime, timezone
+    sid = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    d = _sentence_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{sid}.wav").write_bytes(wav_bytes)
+    (d / f"{sid}.txt").write_text(text, encoding="utf-8")
+    return sid
+
+
+def list_sentences() -> list[dict]:
+    d = _sentence_dir()
+    if not d.is_dir():
+        return []
+    items = []
+    for wav in sorted(d.glob("*.wav")):
+        txt = wav.with_suffix(".txt")
+        if not txt.exists():
+            continue
+        items.append({"id": wav.stem, "text": txt.read_text(encoding="utf-8")})
+    return items
