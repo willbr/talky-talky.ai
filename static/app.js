@@ -397,6 +397,12 @@ function buildEditorDom() {
   trimBtn.addEventListener('click', toggleTrim);
   editor.trimBtn = trimBtn;
 
+  const recalcBtn = document.createElement('button');
+  recalcBtn.className = 'recalc';
+  recalcBtn.textContent = 'Recalc';
+  recalcBtn.title = 'Redistribute internal boundaries by phoneme duration priors, keeping the current endpoints';
+  recalcBtn.addEventListener('click', recalcBoundaries);
+
   const dismiss = document.createElement('button');
   dismiss.className = 'dismiss';
   dismiss.textContent = '×';
@@ -405,6 +411,7 @@ function buildEditorDom() {
   const controls = document.createElement('div');
   controls.className = 'editor-controls';
   controls.appendChild(trimBtn);
+  controls.appendChild(recalcBtn);
   controls.appendChild(dismiss);
 
   header.appendChild(title);
@@ -557,6 +564,31 @@ function drawWaveform() {
     ctx.lineTo(x, h);
     ctx.stroke();
   }
+}
+
+function recalcBoundaries() {
+  if (!editor) return;
+  const n = editor.phonemes.length;
+  if (n === 0) return;
+  const first = editor.boundariesMs[0];
+  const last = editor.boundariesMs[n];
+  const span = Math.max(0, last - first);
+
+  const priors = editor.phonemes.map((p) => (p.prior_ms || 100));
+  const totalPrior = priors.reduce((a, b) => a + b, 0);
+  if (totalPrior === 0) return;
+
+  const newBounds = [first];
+  let cumulative = 0;
+  for (let i = 0; i < n - 1; i++) {
+    cumulative += priors[i];
+    newBounds.push(first + Math.round((cumulative * span) / totalPrior));
+  }
+  newBounds.push(last);
+
+  editor.boundariesMs = newBounds;
+  drawWaveform();
+  updateRowDurations();
 }
 
 function toggleTrim() {

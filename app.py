@@ -181,6 +181,9 @@ def create_app() -> Flask:
                 "symbol": p,
                 "example": phonemes.PHONEME_EXAMPLES.get(p, ""),
                 "recorded": inventory.has_phoneme(p),
+                "prior_ms": extraction.PHONEME_DURATION_MS.get(
+                    p.upper(), extraction.DEFAULT_DURATION_MS,
+                ),
             }
             for p in phs
         ]

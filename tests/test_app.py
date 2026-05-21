@@ -306,6 +306,8 @@ def test_extract_propose_returns_audio_and_boundaries(client, tmp_path):
         assert "example" in entry
         assert "recorded" in entry
         assert isinstance(entry["recorded"], bool)
+        assert "prior_ms" in entry
+        assert isinstance(entry["prior_ms"], int) and entry["prior_ms"] > 0
     assert len(data["boundaries_ms"]) == len(data["phonemes"]) + 1
     for i in range(len(data["boundaries_ms"]) - 1):
         assert data["boundaries_ms"][i] <= data["boundaries_ms"][i + 1]

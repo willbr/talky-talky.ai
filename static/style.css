@@ -148,7 +148,8 @@ audio { display: block; width: 100%; margin: 0.6rem 0; }
   align-items: center;
 }
 
-#phoneme-editor .trim {
+#phoneme-editor .trim,
+#phoneme-editor .recalc {
   background: transparent;
   border: 1px solid var(--accent);
   color: var(--accent);
