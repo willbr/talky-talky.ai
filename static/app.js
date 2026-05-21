@@ -26,6 +26,10 @@ const els = {
   pickSentenceBtn: document.getElementById('pick-sentence-btn'),
   phonemesOnlyToggle: document.getElementById('phonemes-only-toggle'),
   renderedWords: document.getElementById('rendered-words'),
+  compareBtn: document.getElementById('compare-btn'),
+  compareOutput: document.getElementById('compare-output'),
+  compareOutputNormal: document.getElementById('compare-output-normal'),
+  compareOutputPhonemes: document.getElementById('compare-output-phonemes'),
 };
 
 const currentInventorySet = new Set();
@@ -325,35 +329,88 @@ els.saveBtn.addEventListener('click', async () => {
   await refreshInventory();
 });
 
+async function postSynth(sentence, phonemesOnly) {
+  const r = await fetch('/api/synthesize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sentence, phonemes_only: phonemesOnly }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error(err.error || r.statusText);
+  }
+  return r.json();
+}
+
+function setAudioFromBase64(audioEl, b64) {
+  if (!b64) {
+    audioEl.removeAttribute('src');
+    return;
+  }
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: 'audio/wav' });
+  audioEl.src = URL.createObjectURL(blob);
+}
+
 async function synthesise() {
   const sentence = els.sentenceInput.value.trim();
   if (!sentence) return;
 
-  const r = await fetch('/api/synthesize', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sentence, phonemes_only: els.phonemesOnlyToggle.checked }),
-  });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    els.skippedList.textContent = `synth failed: ${err.error || r.statusText}`;
+  // Single-output mode hides the comparison row.
+  els.compareOutput.hidden = true;
+  els.output.hidden = false;
+
+  let result;
+  try {
+    result = await postSynth(sentence, els.phonemesOnlyToggle.checked);
+  } catch (e) {
+    els.skippedList.textContent = `synth failed: ${e.message}`;
     return;
   }
-  const { audio: b64, skipped } = await r.json();
+  const { audio: b64, skipped } = result;
 
+  setAudioFromBase64(els.output, b64);
   if (b64) {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const blob = new Blob([bytes], { type: 'audio/wav' });
-    els.output.src = URL.createObjectURL(blob);
     els.output.play().catch(() => { /* user gesture is the click on synth */ });
-  } else {
-    els.output.removeAttribute('src');
   }
 
   renderRenderedWords(sentence, skipped);
   renderSkipped(skipped);
+}
+
+async function compareSynth() {
+  const sentence = els.sentenceInput.value.trim();
+  if (!sentence) return;
+
+  // Comparison mode hides the single output player.
+  els.output.hidden = true;
+  els.compareOutput.hidden = false;
+
+  let normal;
+  let phonemes;
+  try {
+    [normal, phonemes] = await Promise.all([
+      postSynth(sentence, false),
+      postSynth(sentence, true),
+    ]);
+  } catch (e) {
+    els.skippedList.textContent = `synth failed: ${e.message}`;
+    return;
+  }
+
+  setAudioFromBase64(els.compareOutputNormal, normal.audio);
+  setAudioFromBase64(els.compareOutputPhonemes, phonemes.audio);
+
+  // Use the normal-mode skip list for chip filtering; it represents words
+  // that simply have no source audio at all (no word recording, no phoneme
+  // fallback). Phonemes-only skips can be wider but those words still have
+  // word recordings worth editing.
+  renderRenderedWords(sentence, normal.skipped);
+  // Skip chips: union of both modes (anything that failed somewhere).
+  const skippedUnion = Array.from(new Set([...normal.skipped, ...phonemes.skipped]));
+  renderSkipped(skippedUnion);
 }
 
 function renderRenderedWords(sentence, skipped) {
@@ -421,6 +478,7 @@ function renderSkipped(skipped) {
 }
 
 els.synthBtn.addEventListener('click', synthesise);
+els.compareBtn.addEventListener('click', compareSynth);
 
 function setRefStatus(text, isError = false) {
   els.referenceStatus.textContent = text;

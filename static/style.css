@@ -147,6 +147,27 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
 }
 .synth-controls .phonemes-only input { width: auto; margin: 0; }
 
+#compare-output {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+#compare-output .compare-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+#compare-output .compare-label {
+  flex: 0 0 8rem;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+#compare-output audio {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 #skipped-list,
 #rendered-words {
   margin-top: 0.8rem;
