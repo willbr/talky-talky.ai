@@ -431,7 +431,9 @@ function drawSpectrogram(canvas, spec, units) {
   if (canvas.width !== cssW) canvas.width = cssW;
   const w = canvas.width;
   const h = canvas.height;
-  const labelH = 18;
+  const wordLabelH = 16;
+  const phonemeLabelH = 14;
+  const labelH = wordLabelH + phonemeLabelH;
   const specH = h - labelH;
 
   const bin = atob(spec.data);
@@ -465,15 +467,43 @@ function drawSpectrogram(canvas, spec, units) {
 
   if (!units || !units.length) return;
   const duration = spec.duration_ms;
+
+  // Two-band label strip: word labels on top, phoneme labels below.
   ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
   ctx.fillRect(0, 0, w, labelH);
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+
+  // Phoneme boundaries: thin dashed lines spanning the full canvas, drawn first
+  // so word boundaries (solid, brighter) sit on top of them at coincident edges.
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.font = '10px ui-monospace, "Cascadia Mono", monospace';
+  ctx.fillStyle = '#b8c0c8';
+  for (const u of units) {
+    if (!u.phonemes || !u.phonemes.length) continue;
+    for (let j = 1; j < u.phonemes.length; j++) {
+      const ph = u.phonemes[j];
+      const x = (ph.start_ms / duration) * w;
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, wordLabelH);
+      ctx.lineTo(x + 0.5, h);
+      ctx.stroke();
+    }
+    for (const ph of u.phonemes) {
+      const xc = ((ph.start_ms + ph.end_ms) / 2 / duration) * w;
+      ctx.fillText(ph.symbol, xc, wordLabelH + phonemeLabelH / 2);
+    }
+  }
+  ctx.restore();
+
+  // Word boundaries: solid, brighter, and word labels in the top band.
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
   ctx.lineWidth = 1;
   ctx.font = '11px ui-monospace, "Cascadia Mono", monospace';
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'center';
   ctx.fillStyle = '#e6e6e6';
-
   for (const u of units) {
     const x0 = (u.start_ms / duration) * w;
     const x1 = (u.end_ms / duration) * w;
@@ -481,7 +511,7 @@ function drawSpectrogram(canvas, spec, units) {
     ctx.moveTo(x0 + 0.5, 0);
     ctx.lineTo(x0 + 0.5, h);
     ctx.stroke();
-    ctx.fillText(u.token, (x0 + x1) / 2, labelH / 2);
+    ctx.fillText(u.token, (x0 + x1) / 2, wordLabelH / 2);
   }
   const xLast = (units[units.length - 1].end_ms / duration) * w;
   ctx.beginPath();

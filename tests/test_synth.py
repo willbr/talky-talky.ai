@@ -209,6 +209,29 @@ def test_synthesise_units_skip_dropped_tokens(temp_inventory):
     assert [u["token"] for u in units] == ["hello"]
 
 
+def test_synthesise_units_word_recording_has_no_phoneme_spans(temp_inventory):
+    """A token rendered from a word recording exposes an empty phoneme list
+    — we have no boundary information inside the word."""
+    _make_recording(temp_inventory / "hello.wav")
+    _, _, units = synth.synthesise("hello")
+    assert units[0]["phonemes"] == []
+
+
+def test_synthesise_units_phoneme_path_exposes_sub_spans(temp_inventory):
+    """A token rendered via the phoneme path gets a sub-span per phoneme,
+    contiguous and matching the parent unit's overall span."""
+    _seed_all_phonemes_for_word(temp_inventory, "hello")
+    _, _, units = synth.synthesise("hello")
+    assert len(units) == 1
+    word = units[0]
+    phs = _phonemes.word_to_phonemes("hello")
+    assert [p["symbol"] for p in word["phonemes"]] == phs
+    assert word["phonemes"][0]["start_ms"] == word["start_ms"]
+    assert word["phonemes"][-1]["end_ms"] == word["end_ms"]
+    for prev, curr in zip(word["phonemes"], word["phonemes"][1:]):
+        assert prev["end_ms"] == curr["start_ms"]
+
+
 def test_synthesise_phonemes_only_skips_when_phoneme_missing(temp_inventory):
     """phonemes_only ignores the word file, so a missing phoneme means the
     word is skipped even if a word recording exists."""

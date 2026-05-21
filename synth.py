@@ -49,6 +49,7 @@ def synthesise(
 
     groups: list[list] = []
     rendered_tokens: list[str] = []
+    group_phonemes: list[list[str] | None] = []  # parallel to groups; None ⇒ single word recording
     skipped: list[str] = []
 
     for token in tokens:
@@ -62,6 +63,10 @@ def synthesise(
         if direct is not None:
             groups.append([direct])
             rendered_tokens.append(token)
+            # Was the direct hit a word or a phoneme symbol? If it was a
+            # phoneme symbol resolved against the phoneme inventory we still
+            # know which phoneme it is — record it for annotation.
+            group_phonemes.append([token.upper()] if phonemes.is_phoneme(token) else None)
             continue
 
         # If the token itself is a phoneme symbol, the chain already had its chance.
@@ -93,33 +98,51 @@ def synthesise(
         else:
             groups.append(phoneme_paths)
             rendered_tokens.append(token)
+            group_phonemes.append(list(phs))
 
     if not groups:
         return None, skipped, []
 
-    units = _compute_units(groups, rendered_tokens)
+    units = _compute_units(groups, rendered_tokens, group_phonemes)
     wav_bytes = audio.concatenate(groups)
     return wav_bytes, skipped, units
 
 
-def _compute_units(groups: list[list], rendered_tokens: list[str]) -> list[dict]:
+def _compute_units(
+    groups: list[list],
+    rendered_tokens: list[str],
+    group_phonemes: list[list[str] | None],
+) -> list[dict]:
     """Walk the groups in output order, summing per-WAV durations to assign
     each rendered token a [start_ms, end_ms] span in the final stitched audio.
-    Mirrors `audio.concatenate`'s inter-group silence."""
+    Mirrors `audio.concatenate`'s inter-group silence.
+
+    When a group was rendered from phoneme paths, each phoneme also gets its
+    own sub-span under `unit["phonemes"]`. Word-recording groups get an empty
+    phonemes list — we have no boundary information for them.
+    """
     inter_ms = audio.INTER_WORD_SILENCE_SECONDS * 1000
     cumulative = 0.0
     units: list[dict] = []
-    for i, (group, token) in enumerate(zip(groups, rendered_tokens)):
-        dur_ms = 0.0
-        for path in group:
+    for i, (group, token, phs) in enumerate(zip(groups, rendered_tokens, group_phonemes)):
+        unit_start = cumulative
+        phoneme_spans: list[dict] = []
+        for j, path in enumerate(group):
             samples, _ = audio.read_wav(path)
-            dur_ms += len(samples) * 1000 / audio.SAMPLE_RATE
+            d_ms = len(samples) * 1000 / audio.SAMPLE_RATE
+            if phs is not None:
+                phoneme_spans.append({
+                    "symbol": phs[j],
+                    "start_ms": int(round(cumulative)),
+                    "end_ms": int(round(cumulative + d_ms)),
+                })
+            cumulative += d_ms
         units.append({
             "token": token,
-            "start_ms": int(round(cumulative)),
-            "end_ms": int(round(cumulative + dur_ms)),
+            "start_ms": int(round(unit_start)),
+            "end_ms": int(round(cumulative)),
+            "phonemes": phoneme_spans,
         })
-        cumulative += dur_ms
         if i < len(groups) - 1:
             cumulative += inter_ms
     return units
