@@ -25,7 +25,14 @@ const els = {
   bookSelect: document.getElementById('book-select'),
   pickSentenceBtn: document.getElementById('pick-sentence-btn'),
   phonemesOnlyToggle: document.getElementById('phonemes-only-toggle'),
+  renderedWords: document.getElementById('rendered-words'),
 };
+
+const currentInventorySet = new Set();
+
+function normaliseWord(s) {
+  return s.toLowerCase().trim().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim();
+}
 
 const PHONEMES_ONLY_KEY = 'tt.phonemesOnly';
 els.phonemesOnlyToggle.checked = localStorage.getItem(PHONEMES_ONLY_KEY) === '1';
@@ -156,6 +163,8 @@ async function refreshWordInventory() {
   const r = await fetch('/api/inventory');
   const { words } = await r.json();
   wordCount = words.length;
+  currentInventorySet.clear();
+  for (const w of words) currentInventorySet.add(w);
   updateStatusStrip();
   els.inventoryChips.innerHTML = '';
   for (const w of words) {
@@ -343,7 +352,50 @@ async function synthesise() {
     els.output.removeAttribute('src');
   }
 
+  renderRenderedWords(sentence, skipped);
   renderSkipped(skipped);
+}
+
+function renderRenderedWords(sentence, skipped) {
+  els.renderedWords.innerHTML = '';
+  const skippedSet = new Set(skipped.map(normaliseWord));
+  const seen = new Set();
+  const words = [];
+  for (const raw of sentence.split(/\s+/)) {
+    const w = normaliseWord(raw);
+    if (!w || seen.has(w) || skippedSet.has(w)) continue;
+    if (!currentInventorySet.has(w)) continue;
+    seen.add(w);
+    words.push(w);
+  }
+  if (!words.length) return;
+
+  const label = document.createElement('span');
+  label.className = 'rendered-label';
+  label.textContent = `Edit (${words.length}):`;
+  els.renderedWords.appendChild(label);
+
+  for (const w of words) {
+    const chip = document.createElement('span');
+    chip.className = 'chip rendered';
+
+    const lbl = document.createElement('span');
+    lbl.textContent = w;
+    chip.appendChild(lbl);
+
+    const edit = document.createElement('button');
+    edit.className = 'chip-edit';
+    edit.textContent = '✎';
+    edit.title = `Edit "${w}"`;
+    edit.addEventListener('click', (e) => {
+      e.stopPropagation();
+      activateTab('train-tab');
+      openExtractEditor(w);
+    });
+    chip.appendChild(edit);
+
+    els.renderedWords.appendChild(chip);
+  }
 }
 
 function renderSkipped(skipped) {

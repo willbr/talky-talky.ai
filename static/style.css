@@ -147,7 +147,8 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
 }
 .synth-controls .phonemes-only input { width: auto; margin: 0; }
 
-#skipped-list {
+#skipped-list,
+#rendered-words {
   margin-top: 0.8rem;
   display: flex;
   flex-wrap: wrap;
@@ -155,7 +156,8 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   align-items: center;
   font-size: 0.85em;
 }
-#skipped-list .skipped-label { flex-basis: 100%; color: var(--muted); }
+#skipped-list .skipped-label,
+#rendered-words .rendered-label { flex-basis: 100%; color: var(--muted); }
 
 #phoneme-pane {
   background: var(--panel);
