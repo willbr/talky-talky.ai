@@ -482,6 +482,88 @@ def test_extract_save_normalises_word(client, tmp_path):
     assert r.status_code == 200
 
 
+def test_trim_crops_recording(client, tmp_path):
+    # 1 s of low-amplitude noise with a louder burst around 500 ms.
+    n = audio.SAMPLE_RATE
+    samples = np.full(n, 100, dtype=np.int16)
+    burst_start = int(0.45 * audio.SAMPLE_RATE)
+    burst_end = int(0.55 * audio.SAMPLE_RATE)
+    samples[burst_start:burst_end] = 20000
+    audio.write_wav(tmp_path / "hello.wav", samples)
+
+    r = client.post("/api/extract/trim", json={
+        "word": "hello",
+        "start_ms": 300,
+        "end_ms": 700,
+    })
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["word"] == "hello"
+    assert 395 <= body["duration_ms"] <= 405
+
+    cropped, _ = audio.read_wav(tmp_path / "hello.wav")
+    assert 0.395 * audio.SAMPLE_RATE <= len(cropped) <= 0.405 * audio.SAMPLE_RATE
+    assert int(np.max(np.abs(cropped))) >= audio.PEAK_TARGET - 1
+
+
+def test_trim_404_when_word_not_recorded(client):
+    r = client.post("/api/extract/trim", json={
+        "word": "ghost",
+        "start_ms": 0,
+        "end_ms": 200,
+    })
+    assert r.status_code == 404
+
+
+def test_trim_400_when_range_inverted(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    r = client.post("/api/extract/trim", json={
+        "word": "hello",
+        "start_ms": 500,
+        "end_ms": 200,
+    })
+    assert r.status_code == 400
+    assert "greater" in r.get_json()["error"].lower()
+
+
+def test_trim_400_when_too_short(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    r = client.post("/api/extract/trim", json={
+        "word": "hello",
+        "start_ms": 100,
+        "end_ms": 150,
+    })
+    assert r.status_code == 400
+    assert "too short" in r.get_json()["error"].lower()
+
+
+def test_trim_400_when_out_of_range(client, tmp_path):
+    _seed_word(tmp_path, "hello", duration_seconds=1.0)
+    r = client.post("/api/extract/trim", json={
+        "word": "hello",
+        "start_ms": 0,
+        "end_ms": 5000,
+    })
+    assert r.status_code == 400
+    assert "out of range" in r.get_json()["error"].lower()
+
+
+def test_trim_renormalises_loudness(client, tmp_path):
+    n = audio.SAMPLE_RATE
+    samples = np.full(n, 1000, dtype=np.int16)  # quiet — well below PEAK_TARGET
+    audio.write_wav(tmp_path / "hello.wav", samples)
+
+    r = client.post("/api/extract/trim", json={
+        "word": "hello",
+        "start_ms": 200,
+        "end_ms": 800,
+    })
+    assert r.status_code == 200
+
+    cropped, _ = audio.read_wav(tmp_path / "hello.wav")
+    assert int(np.max(np.abs(cropped))) >= audio.PEAK_TARGET - 1
+
+
 def test_sentence_record_saves_pair(client, tmp_path):
     wav = _make_wav_bytes()
     r = client.post(

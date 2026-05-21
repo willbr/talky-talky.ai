@@ -261,6 +261,46 @@ def create_app() -> Flask:
         log.info("extract/save: word=%r saved=%s skipped=%s", word, saved, skipped)
         return jsonify({"saved": saved, "skipped": skipped}), 200
 
+    @flask_app.route("/api/extract/trim", methods=["POST"])
+    def api_extract_trim():
+        data = request.get_json(silent=True) or {}
+        word_raw = data.get("word", "")
+        word = inventory.normalise(word_raw)
+        if not word:
+            return jsonify({"error": "word is required"}), 400
+        if not inventory.has(word):
+            return jsonify({"error": "word not recorded", "word": word}), 404
+
+        start_ms = data.get("start_ms")
+        end_ms = data.get("end_ms")
+        if not isinstance(start_ms, (int, float)) or not isinstance(end_ms, (int, float)):
+            return jsonify({"error": "start_ms and end_ms are required"}), 400
+        if end_ms <= start_ms:
+            return jsonify({"error": "end_ms must be greater than start_ms"}), 400
+
+        samples, _ = audio.read_wav(inventory.path(word))
+        duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
+        if start_ms < 0 or end_ms > duration_ms + 5:
+            return jsonify({"error": "trim out of range"}), 400
+
+        slice_arr = audio.slice_samples(samples, int(start_ms), int(end_ms))
+        if len(slice_arr) < int(audio.SAMPLE_RATE * audio.MIN_LENGTH_SECONDS):
+            return jsonify({"error": "trim too short"}), 400
+
+        normalised = audio.peak_normalise(slice_arr)
+        out = io.BytesIO()
+        with wave.open(out, "wb") as w:
+            w.setnchannels(audio.CHANNELS)
+            w.setsampwidth(audio.SAMPLE_WIDTH)
+            w.setframerate(audio.SAMPLE_RATE)
+            w.writeframes(normalised.tobytes())
+        inventory.save(word, out.getvalue())
+
+        new_duration_ms = int(len(normalised) * 1000 / audio.SAMPLE_RATE)
+        log.info("extract/trim: word=%r %d-%dms -> %dms",
+                 word, int(start_ms), int(end_ms), new_duration_ms)
+        return jsonify({"word": word, "duration_ms": new_duration_ms}), 200
+
     @flask_app.route("/api/sentence/record", methods=["POST"])
     def api_sentence_record():
         sentence = request.form.get("sentence", "").strip()

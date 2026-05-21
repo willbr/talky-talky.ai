@@ -513,6 +513,7 @@ async function openExtractEditor(word) {
     viewStartMs: 0,
     viewEndMs: prop.audio_duration_ms,
     trimBtn: null,
+    trimSaveBtn: null,
   };
   applyTrim();
 
@@ -642,13 +643,21 @@ function buildEditorDom() {
   saveBtn.textContent = 'Save phonemes';
   saveBtn.className = 'save';
   saveBtn.addEventListener('click', () => savePhonemesFromEditor());
+  const saveTrimBtn = document.createElement('button');
+  saveTrimBtn.textContent = 'Save trim';
+  saveTrimBtn.className = 'save-trim';
+  saveTrimBtn.title = 'Crop the word recording to the outer boundaries';
+  saveTrimBtn.addEventListener('click', () => saveTrimFromEditor());
+  editor.trimSaveBtn = saveTrimBtn;
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Cancel';
   cancelBtn.className = 'cancel';
   cancelBtn.addEventListener('click', closeExtractEditor);
   actions.appendChild(saveBtn);
+  actions.appendChild(saveTrimBtn);
   actions.appendChild(cancelBtn);
   container.appendChild(actions);
+  updateTrimEnabled();
 
   els.recordPane.insertAdjacentElement('afterend', container);
   editor.container = container;
@@ -715,6 +724,18 @@ function drawWaveform() {
     const isLoud = bucketPeak >= threshold;
     ctx.fillStyle = isLoud ? '#8fdf9b' : '#4a4d54';
     ctx.fillRect(x, mid - y, 1, Math.max(1, y * 2));
+  }
+
+  const firstBound = editor.boundariesMs[0];
+  const lastBound = editor.boundariesMs[editor.boundariesMs.length - 1];
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+  if (firstBound > viewStart) {
+    const leftEnd = Math.min(w, ((firstBound - viewStart) / viewSpan) * w);
+    ctx.fillRect(0, 0, leftEnd, h);
+  }
+  if (lastBound < viewEnd) {
+    const rightStart = Math.max(0, ((lastBound - viewStart) / viewSpan) * w);
+    ctx.fillRect(rightStart, 0, w - rightStart, h);
   }
 
   ctx.strokeStyle = '#4ea8de';
@@ -831,6 +852,46 @@ function updateRowDurations() {
     const durEl = row.querySelector('.duration');
     if (durEl) durEl.textContent = `${dur} ms`;
   }
+  updateTrimEnabled();
+}
+
+function updateTrimEnabled() {
+  if (!editor || !editor.trimSaveBtn) return;
+  const first = editor.boundariesMs[0];
+  const last = editor.boundariesMs[editor.boundariesMs.length - 1];
+  editor.trimSaveBtn.disabled = (first === 0 && last === editor.audioDurationMs);
+}
+
+async function saveTrimFromEditor() {
+  if (!editor) return;
+  const word = editor.word;
+  const start = editor.boundariesMs[0];
+  const end = editor.boundariesMs[editor.boundariesMs.length - 1];
+  const ok = window.confirm(
+    `Trim "${word}" to ${start}–${end} ms? This overwrites the recording.`
+  );
+  if (!ok) return;
+
+  let r;
+  try {
+    r = await fetch('/api/extract/trim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word, start_ms: start, end_ms: end }),
+    });
+  } catch (e) {
+    setStatus(`Trim failed: ${e.message}`, true);
+    return;
+  }
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setStatus(`Trim: ${err.error || r.statusText}`, true);
+    return;
+  }
+  const { duration_ms } = await r.json();
+  setStatus(`Trimmed ${word} → ${duration_ms} ms`);
+  closeExtractEditor();
+  await openExtractEditor(word);
 }
 
 async function ensureEditorAudioBuffer() {
