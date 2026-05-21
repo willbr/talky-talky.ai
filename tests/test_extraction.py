@@ -78,6 +78,26 @@ def test_propose_boundaries_empty_sequence_returns_single_zero():
     assert extraction.propose_boundaries(samples, []) == [0]
 
 
+def test_propose_boundaries_ignores_single_window_click():
+    """A single very-brief loud spike (mic tap, mouse click) at the start or
+    end of the recording must not be counted as the loud region's onset/offset."""
+    # 50 ms quiet, 10 ms big spike, 150 ms quiet, 600 ms sustained tone, 200 ms quiet.
+    quiet_lead = np.zeros(int(audio.SAMPLE_RATE * 0.05), dtype=np.int16)
+    spike = np.ones(int(audio.SAMPLE_RATE * 0.01), dtype=np.int16) * 30000
+    gap = np.zeros(int(audio.SAMPLE_RATE * 0.15), dtype=np.int16)
+    tone = np.ones(int(audio.SAMPLE_RATE * 0.6), dtype=np.int16) * 15000
+    quiet_trail = np.zeros(int(audio.SAMPLE_RATE * 0.2), dtype=np.int16)
+    samples = np.concatenate([quiet_lead, spike, gap, tone, quiet_trail])
+
+    bounds = extraction.propose_boundaries(samples, ["W", "IY"])
+
+    # The spike is at ~50 ms, the actual speech starts at ~210 ms.
+    # Boundary should be in the speech region, not at the spike.
+    assert bounds[0] >= 180   # well past the spike
+    # And ends before the trailing silence (speech ends at ~810 ms).
+    assert bounds[-1] <= 840
+
+
 def test_propose_boundaries_clips_low_level_noise_at_edges():
     """Background noise at start/end above the old 2% threshold but still
     well below speech level must be excluded from the loud region."""

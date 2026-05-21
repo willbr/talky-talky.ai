@@ -30,6 +30,7 @@ NOISE_FLOOR_PERCENTILE = 10           # quietest 10% of windows define the floor
 NOISE_FLOOR_MULTIPLIER = 3.0          # threshold = floor * this
 MIN_THRESHOLD_PEAK_RATIO = 0.05       # but never below 5% of peak RMS
 MAX_THRESHOLD_PEAK_RATIO = 0.5        # and never above 50% of peak RMS
+MIN_LOUD_RUN_WINDOWS = 3              # loud region must run at least this many windows (~60 ms)
 
 PHONEME_DURATION_MS: dict[str, int] = {
     # vowels (~150 ms)
@@ -50,6 +51,28 @@ PHONEME_DURATION_MS: dict[str, int] = {
     # affricates (~130 ms)
     "CH": 130, "JH": 130,
 }
+
+
+def _runs_of_at_least(mask: np.ndarray, min_run: int) -> np.ndarray:
+    """Return a copy of `mask` where True values are only kept if they belong
+    to a run of at least `min_run` consecutive True values.
+    """
+    if min_run <= 1:
+        return mask.copy()
+    out = np.zeros_like(mask)
+    n = len(mask)
+    i = 0
+    while i < n:
+        if mask[i]:
+            j = i
+            while j < n and mask[j]:
+                j += 1
+            if j - i >= min_run:
+                out[i:j] = True
+            i = j
+        else:
+            i += 1
+    return out
 
 
 def _loud_region_ms(samples: np.ndarray, sample_rate: int) -> tuple[int, int]:
@@ -102,7 +125,18 @@ def _loud_region_ms(samples: np.ndarray, sample_rate: int) -> tuple[int, int]:
         log.warning("propose_boundaries: no windows above threshold; using full audio range")
         return 0, duration_ms
 
-    loud_indices = np.flatnonzero(loud_mask)
+    # Filter out brief spikes (mic taps, mouse clicks) — only keep runs of at
+    # least MIN_LOUD_RUN_WINDOWS consecutive loud windows.
+    sustained_mask = _runs_of_at_least(loud_mask, MIN_LOUD_RUN_WINDOWS)
+    if not sustained_mask.any():
+        # All loud activity was transient. Fall back to the unfiltered mask
+        # so we still propose something rather than silently span the full clip.
+        log.warning(
+            "propose_boundaries: only transient loud activity; using unfiltered mask"
+        )
+        sustained_mask = loud_mask
+
+    loud_indices = np.flatnonzero(sustained_mask)
     first_window = int(loud_indices[0])
     last_window = int(loud_indices[-1])
 
