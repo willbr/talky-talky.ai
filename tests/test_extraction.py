@@ -76,3 +76,26 @@ def test_propose_boundaries_unknown_phoneme_uses_default(caplog):
 def test_propose_boundaries_empty_sequence_returns_single_zero():
     samples = _tone(400)
     assert extraction.propose_boundaries(samples, []) == [0]
+
+
+def test_propose_boundaries_clips_low_level_noise_at_edges():
+    """Background noise at start/end above the old 2% threshold but still
+    well below speech level must be excluded from the loud region."""
+    rng = np.random.default_rng(42)
+    # 200 ms of low-level noise at ~5% of speech amplitude on each side.
+    n_noise = int(audio.SAMPLE_RATE * 0.2)
+    n_tone = int(audio.SAMPLE_RATE * 0.6)
+    noise_lead = (rng.standard_normal(n_noise) * 1000).astype(np.int16)
+    tone = np.ones(n_tone, dtype=np.int16) * 20000
+    noise_trail = (rng.standard_normal(n_noise) * 1000).astype(np.int16)
+    samples = np.concatenate([noise_lead, tone, noise_trail])
+
+    bounds = extraction.propose_boundaries(samples, ["HH", "AH"])
+
+    # The loud region should be approximately [200 ms, 800 ms] — the tone.
+    # Allow ±40 ms slack for window quantisation (RMS_WINDOW_MS = 20).
+    assert 160 <= bounds[0] <= 240
+    assert 760 <= bounds[-1] <= 840
+    # The full loud span should be most of the 600 ms tone, not the full 1000 ms.
+    assert bounds[-1] - bounds[0] >= 500
+    assert bounds[-1] - bounds[0] <= 700

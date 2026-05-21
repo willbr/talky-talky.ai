@@ -3,9 +3,13 @@
 Pure math; no I/O. Operates on int16 samples and a phoneme sequence,
 returns N+1 boundary times in milliseconds for N phonemes.
 
-The first and last boundaries are clamped to the first/last LOUD sample
-(peak * 2%), so silent edges are excluded by default. Word-internal silences
-are not detected; users fix them by dragging in the editor.
+The first and last boundaries are clamped to the loud region of the
+recording, detected by RMS windowing with a noise-floor-aware threshold:
+the loud region is whatever runs at least one full window above
+`max(3 * noise_floor, peak * 0.05)` (capped at `peak * 0.5`). This
+handles background hiss/breath/room tone that fixed-threshold detection
+treats as speech. Word-internal silences are not detected; users fix
+them by dragging in the editor.
 """
 from __future__ import annotations
 
@@ -18,8 +22,14 @@ import phonemes
 log = logging.getLogger("extraction")
 
 SAMPLE_RATE = 22050
-SILENCE_THRESHOLD_RATIO = 0.02
 DEFAULT_DURATION_MS = 100
+
+# Loud-region detection parameters.
+RMS_WINDOW_MS = 20                    # 20 ms non-overlapping windows for energy
+NOISE_FLOOR_PERCENTILE = 10           # quietest 10% of windows define the floor
+NOISE_FLOOR_MULTIPLIER = 3.0          # threshold = floor * this
+MIN_THRESHOLD_PEAK_RATIO = 0.05       # but never below 5% of peak RMS
+MAX_THRESHOLD_PEAK_RATIO = 0.5        # and never above 50% of peak RMS
 
 PHONEME_DURATION_MS: dict[str, int] = {
     # vowels (~150 ms)
@@ -43,25 +53,63 @@ PHONEME_DURATION_MS: dict[str, int] = {
 
 
 def _loud_region_ms(samples: np.ndarray, sample_rate: int) -> tuple[int, int]:
-    """Return (start_ms, end_ms) covering the loud region of `samples`."""
+    """Return (start_ms, end_ms) covering the loud region of `samples`.
+
+    Uses sliding-window RMS energy plus a noise-floor-calibrated threshold.
+    Falls back to the full audio span if no loud region can be identified
+    (and logs a WARNING).
+    """
     duration_ms = int(len(samples) * 1000 / sample_rate)
     if len(samples) == 0:
         return 0, 0
 
-    peak = int(np.max(np.abs(samples)))
-    if peak == 0:
+    window_n = int(sample_rate * RMS_WINDOW_MS / 1000)
+    if window_n <= 0 or len(samples) < window_n * 2:
+        # Too short for windowed analysis — fall back to the original simple
+        # peak-fraction test so very short clips still work.
+        peak = int(np.max(np.abs(samples)))
+        if peak == 0:
+            log.warning("propose_boundaries: all samples silent; using full audio range")
+            return 0, duration_ms
+        threshold = int(peak * MIN_THRESHOLD_PEAK_RATIO)
+        loud = np.flatnonzero(np.abs(samples) > threshold)
+        if loud.size == 0:
+            log.warning("propose_boundaries: no samples above threshold; using full audio range")
+            return 0, duration_ms
+        first, last = int(loud[0]), int(loud[-1])
+        return (
+            int(first * 1000 / sample_rate),
+            int((last + 1) * 1000 / sample_rate),
+        )
+
+    num_windows = len(samples) // window_n
+    truncated = samples[: num_windows * window_n].astype(np.float32)
+    windows = truncated.reshape(num_windows, window_n)
+    rms = np.sqrt(np.mean(windows ** 2, axis=1))
+
+    peak_rms = float(np.max(rms))
+    if peak_rms == 0:
         log.warning("propose_boundaries: all samples silent; using full audio range")
         return 0, duration_ms
 
-    threshold = int(peak * SILENCE_THRESHOLD_RATIO)
-    loud = np.flatnonzero(np.abs(samples) > threshold)
-    if loud.size == 0:
-        log.warning("propose_boundaries: no samples above threshold; using full audio range")
+    noise_floor = float(np.percentile(rms, NOISE_FLOOR_PERCENTILE))
+    threshold = noise_floor * NOISE_FLOOR_MULTIPLIER
+    threshold = max(threshold, peak_rms * MIN_THRESHOLD_PEAK_RATIO)
+    threshold = min(threshold, peak_rms * MAX_THRESHOLD_PEAK_RATIO)
+
+    loud_mask = rms > threshold
+    if not loud_mask.any():
+        log.warning("propose_boundaries: no windows above threshold; using full audio range")
         return 0, duration_ms
 
-    first, last = int(loud[0]), int(loud[-1])
-    start_ms = int(first * 1000 / sample_rate)
-    end_ms = int((last + 1) * 1000 / sample_rate)
+    loud_indices = np.flatnonzero(loud_mask)
+    first_window = int(loud_indices[0])
+    last_window = int(loud_indices[-1])
+
+    start_sample = first_window * window_n
+    end_sample = (last_window + 1) * window_n
+    start_ms = int(start_sample * 1000 / sample_rate)
+    end_ms = int(end_sample * 1000 / sample_rate)
     return start_ms, end_ms
 
 
