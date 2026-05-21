@@ -150,22 +150,35 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
 #compare-output {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.6rem;
   margin-top: 0.4rem;
 }
 #compare-output .compare-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.6rem;
 }
 #compare-output .compare-label {
   flex: 0 0 8rem;
   color: var(--muted);
   font-size: 0.9em;
+  padding-top: 0.6rem;
 }
-#compare-output audio {
+#compare-output .compare-audio-stack {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+#compare-output audio { width: 100%; }
+
+.spectrogram {
+  display: block;
+  width: 100%;
+  height: 120px;
+  background: #1a1b1e;
+  border-radius: 4px;
 }
 
 #skipped-list,

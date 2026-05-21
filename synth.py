@@ -17,7 +17,7 @@ def tokenise(sentence: str) -> list[str]:
 def synthesise(
     sentence: str,
     phonemes_only: bool = False,
-) -> tuple[bytes | None, list[str]]:
+) -> tuple[bytes | None, list[str], list[dict]]:
     """Synthesise a sentence by stitching word recordings and/or phoneme recordings.
 
     For each token in the sentence:
@@ -34,11 +34,13 @@ def synthesise(
     the chain — tokens are always either ARPABET symbols or phonemised via
     CMUdict, never matched against `inventory/<word>.wav`.
 
-    Returns (wav_bytes_or_None, skipped_tokens).
+    Returns (wav_bytes_or_None, skipped_tokens, units) where `units` is a
+    list of {"token", "start_ms", "end_ms"} for each rendered group, in
+    output order. Useful for annotating the synthesised audio.
     """
     tokens = tokenise(sentence)
     if not tokens:
-        return None, []
+        return None, [], []
 
     if phonemes_only:
         resolvers: list[resolver.Resolver] = [resolver.PhonemeResolver()]
@@ -46,6 +48,7 @@ def synthesise(
         resolvers = resolver.RESOLVERS
 
     groups: list[list] = []
+    rendered_tokens: list[str] = []
     skipped: list[str] = []
 
     for token in tokens:
@@ -58,6 +61,7 @@ def synthesise(
 
         if direct is not None:
             groups.append([direct])
+            rendered_tokens.append(token)
             continue
 
         # If the token itself is a phoneme symbol, the chain already had its chance.
@@ -88,9 +92,34 @@ def synthesise(
             skipped.append(token)
         else:
             groups.append(phoneme_paths)
+            rendered_tokens.append(token)
 
     if not groups:
-        return None, skipped
+        return None, skipped, []
 
+    units = _compute_units(groups, rendered_tokens)
     wav_bytes = audio.concatenate(groups)
-    return wav_bytes, skipped
+    return wav_bytes, skipped, units
+
+
+def _compute_units(groups: list[list], rendered_tokens: list[str]) -> list[dict]:
+    """Walk the groups in output order, summing per-WAV durations to assign
+    each rendered token a [start_ms, end_ms] span in the final stitched audio.
+    Mirrors `audio.concatenate`'s inter-group silence."""
+    inter_ms = audio.INTER_WORD_SILENCE_SECONDS * 1000
+    cumulative = 0.0
+    units: list[dict] = []
+    for i, (group, token) in enumerate(zip(groups, rendered_tokens)):
+        dur_ms = 0.0
+        for path in group:
+            samples, _ = audio.read_wav(path)
+            dur_ms += len(samples) * 1000 / audio.SAMPLE_RATE
+        units.append({
+            "token": token,
+            "start_ms": int(round(cumulative)),
+            "end_ms": int(round(cumulative + dur_ms)),
+        })
+        cumulative += dur_ms
+        if i < len(groups) - 1:
+            cumulative += inter_ms
+    return units

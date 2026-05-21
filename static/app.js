@@ -30,6 +30,9 @@ const els = {
   compareOutput: document.getElementById('compare-output'),
   compareOutputNormal: document.getElementById('compare-output-normal'),
   compareOutputPhonemes: document.getElementById('compare-output-phonemes'),
+  outputSpec: document.getElementById('output-spec'),
+  compareOutputNormalSpec: document.getElementById('compare-output-normal-spec'),
+  compareOutputPhonemesSpec: document.getElementById('compare-output-phonemes-spec'),
 };
 
 const currentInventorySet = new Set();
@@ -369,9 +372,10 @@ async function synthesise() {
     els.skippedList.textContent = `synth failed: ${e.message}`;
     return;
   }
-  const { audio: b64, skipped } = result;
+  const { audio: b64, skipped, units, spectrogram } = result;
 
   setAudioFromBase64(els.output, b64);
+  drawSpectrogram(els.outputSpec, spectrogram, units);
   if (b64) {
     els.output.play().catch(() => { /* user gesture is the click on synth */ });
   }
@@ -402,6 +406,8 @@ async function compareSynth() {
 
   setAudioFromBase64(els.compareOutputNormal, normal.audio);
   setAudioFromBase64(els.compareOutputPhonemes, phonemes.audio);
+  drawSpectrogram(els.compareOutputNormalSpec, normal.spectrogram, normal.units);
+  drawSpectrogram(els.compareOutputPhonemesSpec, phonemes.spectrogram, phonemes.units);
 
   // Use the normal-mode skip list for chip filtering; it represents words
   // that simply have no source audio at all (no word recording, no phoneme
@@ -411,6 +417,77 @@ async function compareSynth() {
   // Skip chips: union of both modes (anything that failed somewhere).
   const skippedUnion = Array.from(new Set([...normal.skipped, ...phonemes.skipped]));
   renderSkipped(skippedUnion);
+}
+
+function drawSpectrogram(canvas, spec, units) {
+  if (!canvas) return;
+  if (!spec || !spec.n_frames || !spec.duration_ms) {
+    canvas.hidden = true;
+    return;
+  }
+  canvas.hidden = false;
+
+  const cssW = canvas.clientWidth || 600;
+  if (canvas.width !== cssW) canvas.width = cssW;
+  const w = canvas.width;
+  const h = canvas.height;
+  const labelH = 18;
+  const specH = h - labelH;
+
+  const bin = atob(spec.data);
+  const mag = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) mag[i] = bin.charCodeAt(i);
+
+  const nFrames = spec.n_frames;
+  const nFreqs = spec.n_freqs;
+
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#1a1b1e';
+  ctx.fillRect(0, 0, w, h);
+
+  const img = ctx.createImageData(w, specH);
+  const pixels = img.data;
+  for (let x = 0; x < w; x++) {
+    const frame = Math.min(nFrames - 1, Math.floor((x / w) * nFrames));
+    const frameBase = frame * nFreqs;
+    for (let y = 0; y < specH; y++) {
+      // y=0 is top → high freq; y=specH-1 is bottom → low freq.
+      const freq = Math.min(nFreqs - 1, Math.floor(((specH - 1 - y) / specH) * nFreqs));
+      const v = mag[frameBase + freq];
+      const i = (y * w + x) * 4;
+      pixels[i] = (v * 143) >> 8;       // r ramps to ~143 (#8f)
+      pixels[i + 1] = (v * 223) >> 8;   // g ramps to ~223 (#df)
+      pixels[i + 2] = (v * 155) >> 8;   // b ramps to ~155 (#9b)
+      pixels[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, labelH);
+
+  if (!units || !units.length) return;
+  const duration = spec.duration_ms;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.fillRect(0, 0, w, labelH);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+  ctx.lineWidth = 1;
+  ctx.font = '11px ui-monospace, "Cascadia Mono", monospace';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e6e6e6';
+
+  for (const u of units) {
+    const x0 = (u.start_ms / duration) * w;
+    const x1 = (u.end_ms / duration) * w;
+    ctx.beginPath();
+    ctx.moveTo(x0 + 0.5, 0);
+    ctx.lineTo(x0 + 0.5, h);
+    ctx.stroke();
+    ctx.fillText(u.token, (x0 + x1) / 2, labelH / 2);
+  }
+  const xLast = (units[units.length - 1].end_ms / duration) * w;
+  ctx.beginPath();
+  ctx.moveTo(xLast - 0.5, 0);
+  ctx.lineTo(xLast - 0.5, h);
+  ctx.stroke();
 }
 
 function renderRenderedWords(sentence, skipped) {

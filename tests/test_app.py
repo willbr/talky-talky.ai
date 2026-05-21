@@ -151,6 +151,36 @@ def test_synthesize_all_missing(client):
     assert data["skipped"] == ["mars", "venus"]
 
 
+def test_synthesize_returns_units_and_spectrogram(client, tmp_path):
+    for word in ("hello", "world"):
+        samples = np.ones(audio.SAMPLE_RATE, dtype=np.int16) * 10000
+        audio.write_wav(tmp_path / f"{word}.wav", samples)
+
+    r = client.post("/api/synthesize", json={"sentence": "hello world"})
+    assert r.status_code == 200
+    data = r.get_json()
+
+    assert [u["token"] for u in data["units"]] == ["hello", "world"]
+    assert data["units"][0]["start_ms"] == 0
+    assert data["units"][0]["end_ms"] == data["units"][1]["start_ms"]
+
+    spec = data["spectrogram"]
+    assert spec is not None
+    assert spec["n_frames"] > 0
+    assert spec["n_freqs"] == 257  # 512 // 2 + 1
+    raw = base64.b64decode(spec["data"])
+    assert len(raw) == spec["n_frames"] * spec["n_freqs"]
+
+
+def test_synthesize_no_spectrogram_when_no_audio(client):
+    r = client.post("/api/synthesize", json={"sentence": "mars venus"})
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data["audio"] is None
+    assert data["spectrogram"] is None
+    assert data["units"] == []
+
+
 def test_synthesize_empty_sentence_400(client):
     r = client.post("/api/synthesize", json={"sentence": ""})
     assert r.status_code == 400

@@ -62,14 +62,21 @@
         </label>
       </div>
       <audio id="output" controls></audio>
+      <canvas id="output-spec" class="spectrogram" height="120" hidden></canvas>
       <div id="compare-output" hidden>
         <div class="compare-row">
           <span class="compare-label">Normal</span>
-          <audio id="compare-output-normal" controls></audio>
+          <div class="compare-audio-stack">
+            <audio id="compare-output-normal" controls></audio>
+            <canvas id="compare-output-normal-spec" class="spectrogram" height="120"></canvas>
+          </div>
         </div>
         <div class="compare-row">
           <span class="compare-label">Phonemes only</span>
-          <audio id="compare-output-phonemes" controls></audio>
+          <div class="compare-audio-stack">
+            <audio id="compare-output-phonemes" controls></audio>
+            <canvas id="compare-output-phonemes-spec" class="spectrogram" height="120"></canvas>
+          </div>
         </div>
       </div>
       <div id="rendered-words" aria-live="polite"></div>

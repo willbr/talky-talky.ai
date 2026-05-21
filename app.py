@@ -14,6 +14,7 @@ import books
 import extraction
 import inventory
 import phonemes
+import spectrogram
 import synth
 
 log = logging.getLogger("talky")
@@ -355,11 +356,29 @@ def create_app() -> Flask:
             return jsonify({"error": "sentence is empty"}), 400
         phonemes_only = bool(data.get("phonemes_only", False))
 
-        wav_bytes, skipped = synth.synthesise(sentence, phonemes_only=phonemes_only)
+        wav_bytes, skipped, units = synth.synthesise(sentence, phonemes_only=phonemes_only)
         encoded = base64.b64encode(wav_bytes).decode("ascii") if wav_bytes else None
+
+        spec_payload = None
+        if wav_bytes is not None:
+            samples, _ = audio.read_wav(io.BytesIO(wav_bytes))
+            spec = spectrogram.compute(samples)
+            spec_payload = {
+                "data": base64.b64encode(spec["data"]).decode("ascii"),
+                "n_frames": spec["n_frames"],
+                "n_freqs": spec["n_freqs"],
+                "hop_ms": spec["hop_ms"],
+                "duration_ms": spec["duration_ms"],
+            }
+
         log.info("synthesize: %r phonemes_only=%s resolved=%s skipped=%s",
                  sentence, phonemes_only, "yes" if wav_bytes else "no", skipped)
-        return jsonify({"audio": encoded, "skipped": skipped}), 200
+        return jsonify({
+            "audio": encoded,
+            "skipped": skipped,
+            "units": units,
+            "spectrogram": spec_payload,
+        }), 200
 
     return flask_app
 
