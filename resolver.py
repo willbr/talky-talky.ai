@@ -31,13 +31,14 @@ class PhonemeResolver:
     Returns None for any token that is not itself a valid ARPABET symbol,
     even if a file by that name exists in the word inventory. The synthesis
     loop is responsible for phonemising English words; this resolver only
-    handles raw phoneme symbols.
+    handles raw phoneme symbols and so calls best_phoneme_variant without
+    any context (prev=next=None).
     """
 
     def resolve(self, word: str) -> Path | None:
         if not phonemes.is_phoneme(word):
             return None
-        return inventory.phoneme_path(word) if inventory.has_phoneme(word) else None
+        return inventory.best_phoneme_variant(word)
 
 
 RESOLVERS: list[Resolver] = [WordResolver(), PhonemeResolver()]

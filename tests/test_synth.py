@@ -232,6 +232,61 @@ def test_synthesise_units_phoneme_path_exposes_sub_spans(temp_inventory):
         assert prev["end_ms"] == curr["start_ms"]
 
 
+def _save_variant_wav(symbol, n_samples=2000, amplitude=10000, **kwargs):
+    """Persist a phoneme variant using inventory.save_variant. kwargs are
+    forwarded as source/prev/next."""
+    samples = np.ones(n_samples, dtype=np.int16) * amplitude
+    buf = io.BytesIO()
+    import wave as _wave
+    with _wave.open(buf, "wb") as w:
+        w.setnchannels(audio.CHANNELS)
+        w.setsampwidth(audio.SAMPLE_WIDTH)
+        w.setframerate(audio.SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    return inventory.save_variant(symbol, buf.getvalue(), **kwargs)
+
+
+def test_phoneme_selection_uses_context_match(temp_inventory):
+    """When two variants exist for the same phoneme but with different
+    recorded contexts, synthesise picks the one whose context matches the
+    target word's neighbour phonemes."""
+    phs = _phonemes.word_to_phonemes("hello")
+    assert phs is not None
+    # Seed every phoneme of "hello" with a single isolated variant so the
+    # word resolves end-to-end, then add a CONTEXT variant for HH whose
+    # neighbours match the target.
+    for ph in set(phs):
+        _save_variant_wav(ph, source="isolated", prev=None, next=None,
+                          amplitude=1000)
+    hh_idx = phs.index("HH")
+    target_prev = phs[hh_idx - 1] if hh_idx > 0 else None
+    target_next = phs[hh_idx + 1] if hh_idx < len(phs) - 1 else None
+    contextual = _save_variant_wav(
+        "HH", source="hello", prev=target_prev, next=target_next,
+        amplitude=15000,
+    )
+    assert inventory.best_phoneme_variant("HH", target_prev, target_next) \
+        == inventory.variant_path("HH", contextual)
+
+    wav_bytes, skipped, _ = synth.synthesise("hello")
+    assert wav_bytes is not None
+    assert skipped == []
+    # The contextual HH (amplitude 15000) is louder than the isolated
+    # variants (amplitude 1000), so its peak survives in the stitched audio.
+    loaded, _ = audio.read_wav(io.BytesIO(wav_bytes))
+    assert int(np.max(np.abs(loaded))) >= 14000
+
+
+def test_phoneme_selection_falls_back_to_only_variant(temp_inventory):
+    """When only one variant exists and contexts don't match, it still wins
+    (no other choice). Output is produced, not skipped."""
+    for ph in set(_phonemes.word_to_phonemes("hello")):
+        _save_variant_wav(ph, source="isolated", prev=None, next=None)
+    wav_bytes, skipped, _ = synth.synthesise("hello")
+    assert wav_bytes is not None
+    assert skipped == []
+
+
 def test_synthesise_phonemes_only_skips_when_phoneme_missing(temp_inventory):
     """phonemes_only ignores the word file, so a missing phoneme means the
     word is skipped even if a word recording exists."""

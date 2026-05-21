@@ -229,10 +229,10 @@ async function refreshPhonemeInventory() {
       const edit = document.createElement('button');
       edit.className = 'chip-edit';
       edit.textContent = '✎';
-      edit.title = `Trim ${symbol}`;
-      edit.addEventListener('click', (e) => {
+      edit.title = `${symbol} variants`;
+      edit.addEventListener('click', async (e) => {
         e.stopPropagation();
-        openPhonemeEditor(symbol);
+        await togglePhonemeVariantsPanel(chip, symbol);
       });
       chip.appendChild(edit);
     }
@@ -240,6 +240,131 @@ async function refreshPhonemeInventory() {
     if (currentPhoneme === symbol) chip.classList.add('armed');
     els.phonemeGrid.appendChild(chip);
   }
+}
+
+async function togglePhonemeVariantsPanel(chip, symbol) {
+  // Remove any panel that's already on another chip so only one is open
+  // at a time.
+  const existing = chip.querySelector('.variants-panel');
+  for (const open of els.phonemeGrid.querySelectorAll('.variants-panel')) {
+    open.parentElement.classList.remove('expanded');
+    open.remove();
+  }
+  if (existing) return;   // we were toggling it off
+
+  let body;
+  try {
+    const r = await fetch(`/api/phoneme/variants?symbol=${encodeURIComponent(symbol)}`);
+    if (!r.ok) {
+      setStatus(`Variants: ${r.statusText}`, true);
+      return;
+    }
+    body = await r.json();
+  } catch (e) {
+    setStatus(`Variants failed: ${e.message}`, true);
+    return;
+  }
+
+  chip.classList.add('expanded');
+  const panel = document.createElement('div');
+  panel.className = 'variants-panel';
+
+  if (!body.variants.length) {
+    const empty = document.createElement('div');
+    empty.className = 'variant-empty';
+    empty.textContent = 'no variants';
+    panel.appendChild(empty);
+    chip.appendChild(panel);
+    return;
+  }
+
+  for (const v of body.variants) {
+    const row = document.createElement('div');
+    row.className = 'variant-row';
+
+    const meta = document.createElement('span');
+    meta.className = 'variant-meta';
+    const contextBits = [];
+    if (v.prev) contextBits.push(`prev=${v.prev}`);
+    if (v.next) contextBits.push(`next=${v.next}`);
+    const context = contextBits.length ? ` (${contextBits.join(' ')})` : '';
+    const sourceLabel = v.source === 'isolated' ? 'isolated' : `from "${v.source}"`;
+    meta.textContent = `${sourceLabel}${context} · ${v.duration_ms} ms`;
+    row.appendChild(meta);
+
+    const playBtn = document.createElement('button');
+    playBtn.className = 'variant-action';
+    playBtn.textContent = '▶';
+    playBtn.title = 'Play';
+    playBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playPhonemeVariant(symbol, v.id);
+    });
+    row.appendChild(playBtn);
+
+    const trimBtn = document.createElement('button');
+    trimBtn.className = 'variant-action';
+    trimBtn.textContent = '✎';
+    trimBtn.title = 'Trim';
+    trimBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPhonemeEditor(symbol, v.id);
+    });
+    row.appendChild(trimBtn);
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'variant-action delete';
+    delBtn.textContent = '×';
+    delBtn.title = 'Delete';
+    delBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!window.confirm(`Delete this ${symbol} variant?`)) return;
+      const r = await fetch(
+        `/api/phoneme/variants?symbol=${encodeURIComponent(symbol)}&id=${encodeURIComponent(v.id)}`,
+        { method: 'DELETE' },
+      );
+      if (!r.ok && r.status !== 204) {
+        const err = await r.json().catch(() => ({}));
+        setStatus(`Delete: ${err.error || r.statusText}`, true);
+        return;
+      }
+      await refreshPhonemeInventory();
+    });
+    row.appendChild(delBtn);
+
+    panel.appendChild(row);
+  }
+  chip.appendChild(panel);
+}
+
+async function playPhonemeVariant(symbol, variantId) {
+  // Quick-fetch + decode + play. No persistent audio context needed —
+  // these are short clips.
+  let prop;
+  try {
+    const r = await fetch('/api/phoneme/propose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, variant_id: variantId }),
+    });
+    if (!r.ok) {
+      setStatus(`Play: ${r.statusText}`, true);
+      return;
+    }
+    prop = await r.json();
+  } catch (e) {
+    setStatus(`Play failed: ${e.message}`, true);
+    return;
+  }
+  const bin = atob(prop.audio);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
+  const buffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  src.start();
 }
 
 function armPhoneme(symbol, example) {
@@ -804,15 +929,16 @@ async function openExtractEditor(word) {
   decodeWaveform();
 }
 
-async function openPhonemeEditor(symbol) {
+async function openPhonemeEditor(symbol, variantId = null) {
   closeExtractEditor();
 
   let prop;
   try {
+    const payload = variantId ? { symbol, variant_id: variantId } : { symbol };
     const r = await fetch('/api/phoneme/propose', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol }),
+      body: JSON.stringify(payload),
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
@@ -831,6 +957,7 @@ async function openPhonemeEditor(symbol) {
   editor = {
     mode: 'phoneme',
     phonemeSymbol: prop.symbol,
+    phonemeVariantId: prop.variant_id,
     phonemeExample: prop.example,
     audioBase64: prop.audio,
     audioDurationMs: prop.audio_duration_ms,
@@ -1253,8 +1380,9 @@ async function saveTrimFromEditor() {
 
   const endpoint = isPhoneme ? '/api/phoneme/trim' : '/api/extract/trim';
   const body = isPhoneme
-    ? { symbol: label, start_ms: start, end_ms: end }
+    ? { symbol: label, variant_id: editor.phonemeVariantId, start_ms: start, end_ms: end }
     : { word: label, start_ms: start, end_ms: end };
+  const variantId = editor.phonemeVariantId;
 
   let r;
   try {
@@ -1276,7 +1404,7 @@ async function saveTrimFromEditor() {
   setStatus(`Trimmed ${label} → ${duration_ms} ms`);
   closeExtractEditor();
   if (isPhoneme) {
-    await openPhonemeEditor(label);
+    await openPhonemeEditor(label, variantId);
   } else {
     await openExtractEditor(label);
   }
@@ -1329,7 +1457,8 @@ async function savePhonemesFromEditor() {
     return;
   }
   const { saved, skipped } = await r.json();
-  let msg = `Saved phonemes: ${saved.length ? saved.join(', ') : 'none'}`;
+  const savedSymbols = saved.map((s) => s.symbol);
+  let msg = `Saved phonemes: ${savedSymbols.length ? savedSymbols.join(', ') : 'none'}`;
   if (skipped.length) {
     const skipStr = skipped.map((s) => `${s.symbol} (${s.reason})`).join(', ');
     msg += ` — skipped: ${skipStr}`;

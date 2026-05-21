@@ -199,8 +199,10 @@ def test_record_phoneme_saves_valid_wav(client, tmp_path):
         content_type="multipart/form-data",
     )
     assert r.status_code == 200
-    assert r.get_json() == {"phoneme": "AA"}
-    assert (tmp_path / "phonemes" / "aa.wav").exists()
+    body = r.get_json()
+    assert body["phoneme"] == "AA"
+    assert body["variant_id"]
+    assert (tmp_path / "phonemes" / "aa" / f"{body['variant_id']}.wav").exists()
 
 
 def test_record_phoneme_case_insensitive(client, tmp_path):
@@ -211,8 +213,9 @@ def test_record_phoneme_case_insensitive(client, tmp_path):
         content_type="multipart/form-data",
     )
     assert r.status_code == 200
-    assert r.get_json() == {"phoneme": "AA"}
-    assert (tmp_path / "phonemes" / "aa.wav").exists()
+    body = r.get_json()
+    assert body["phoneme"] == "AA"
+    assert (tmp_path / "phonemes" / "aa" / f"{body['variant_id']}.wav").exists()
 
 
 def test_record_phoneme_rejects_unknown_symbol(client):
@@ -258,29 +261,26 @@ def test_record_phoneme_rejects_too_short(client):
     assert r.status_code == 400
 
 
-def test_record_phoneme_409_on_existing(client, tmp_path):
-    (tmp_path / "phonemes").mkdir(exist_ok=True)
-    (tmp_path / "phonemes" / "aa.wav").write_bytes(b"existing")
+def test_record_phoneme_appends_new_variant(client, tmp_path):
+    """Each /api/record/phoneme adds a new variant — never clobbers the
+    prior take. The user manages duplicates by deleting from the chip."""
     wav = _make_wav_bytes()
-    r = client.post(
+    first = client.post(
         "/api/record/phoneme",
         data={"phoneme": "AA", "audio": (io.BytesIO(wav), "audio.wav")},
         content_type="multipart/form-data",
     )
-    assert r.status_code == 409
-
-
-def test_record_phoneme_overwrite_true_replaces(client, tmp_path):
-    (tmp_path / "phonemes").mkdir(exist_ok=True)
-    (tmp_path / "phonemes" / "aa.wav").write_bytes(b"existing")
-    wav = _make_wav_bytes()
-    r = client.post(
-        "/api/record/phoneme?overwrite=true",
+    second = client.post(
+        "/api/record/phoneme",
         data={"phoneme": "AA", "audio": (io.BytesIO(wav), "audio.wav")},
         content_type="multipart/form-data",
     )
-    assert r.status_code == 200
-    assert (tmp_path / "phonemes" / "aa.wav").read_bytes() != b"existing"
+    assert first.status_code == 200 and second.status_code == 200
+    vid1 = first.get_json()["variant_id"]
+    vid2 = second.get_json()["variant_id"]
+    assert vid1 != vid2
+    assert (tmp_path / "phonemes" / "aa" / f"{vid1}.wav").exists()
+    assert (tmp_path / "phonemes" / "aa" / f"{vid2}.wav").exists()
 
 
 def test_phoneme_inventory_lists_all_39(client):
@@ -295,9 +295,9 @@ def test_phoneme_inventory_lists_all_39(client):
 
 
 def test_phoneme_inventory_reflects_saved_phonemes(client, tmp_path):
-    (tmp_path / "phonemes").mkdir(exist_ok=True)
-    (tmp_path / "phonemes" / "aa.wav").write_bytes(b"x")
-    (tmp_path / "phonemes" / "b.wav").write_bytes(b"x")
+    wav = _make_wav_bytes()
+    inventory.save_variant("AA", wav, source="isolated", prev=None, next=None)
+    inventory.save_variant("B", wav, source="isolated", prev=None, next=None)
 
     r = client.get("/api/phoneme-inventory")
     assert r.status_code == 200
@@ -392,10 +392,12 @@ def test_extract_save_writes_selected_phonemes(client, tmp_path):
     })
     assert r.status_code == 200
     body = r.get_json()
-    assert set(body["saved"]) == set(entry["symbol"] for entry in prop["phonemes"])
+    saved_symbols = {entry["symbol"] for entry in body["saved"]}
+    assert saved_symbols == set(entry["symbol"] for entry in prop["phonemes"])
+    assert all(entry.get("variant_id") for entry in body["saved"])
     assert body["skipped"] == []
-    for entry in prop["phonemes"]:
-        assert (tmp_path / "phonemes" / f"{entry['symbol'].lower()}.wav").exists()
+    for entry in body["saved"]:
+        assert inventory.variant_path(entry["symbol"], entry["variant_id"]).exists()
 
 
 def test_extract_save_skips_phonemes_with_save_false(client, tmp_path):
@@ -414,8 +416,9 @@ def test_extract_save_skips_phonemes_with_save_false(client, tmp_path):
     assert r.status_code == 200
     body = r.get_json()
     skipped_symbol = prop["phonemes"][1]["symbol"]
-    assert skipped_symbol not in body["saved"]
-    assert not (tmp_path / "phonemes" / f"{skipped_symbol.lower()}.wav").exists()
+    saved_symbols = {entry["symbol"] for entry in body["saved"]}
+    assert skipped_symbol not in saved_symbols
+    assert not (tmp_path / "phonemes" / skipped_symbol.lower()).exists()
 
 
 def test_extract_save_skips_short_slices(client, tmp_path):
@@ -474,25 +477,34 @@ def test_extract_save_rejects_length_mismatch(client, tmp_path):
     assert r.status_code == 400
 
 
-def test_extract_save_overwrites_existing_phoneme(client, tmp_path):
+def test_extract_save_appends_new_variant(client, tmp_path):
+    """Saving a phoneme from a word never overwrites a prior recording —
+    each save appends a new variant. The earlier recording remains in
+    the inventory unchanged."""
     _seed_word(tmp_path, "hello")
     pr = client.post("/api/extract/propose", json={"word": "hello"})
     prop = pr.get_json()
     first_symbol = prop["phonemes"][0]["symbol"]
-    (tmp_path / "phonemes").mkdir(exist_ok=True)
-    target = tmp_path / "phonemes" / f"{first_symbol.lower()}.wav"
-    target.write_bytes(b"OLDOLDOLDOLD")
+    # Pre-existing isolated take of the same phoneme.
+    existing_id = inventory.save_variant(
+        first_symbol, _make_wav_bytes(),
+        source="isolated", prev=None, next=None,
+    )
 
     save_flags = [False] * len(prop["phonemes"])
     save_flags[0] = True
-
     r = client.post("/api/extract/save", json={
         "word": "hello",
         "spans": prop["spans"],
         "save": save_flags,
     })
     assert r.status_code == 200
-    assert target.read_bytes() != b"OLDOLDOLDOLD"
+    body = r.get_json()
+    new_id = body["saved"][0]["variant_id"]
+    assert new_id != existing_id
+    # Both variants exist on disk; the pre-existing isolated take survives.
+    assert inventory.variant_path(first_symbol, existing_id).exists()
+    assert inventory.variant_path(first_symbol, new_id).exists()
 
 
 def test_extract_save_404_when_word_not_recorded(client):
@@ -599,10 +611,18 @@ def test_trim_renormalises_loudness(client, tmp_path):
 
 
 def _seed_phoneme(tmp_path, symbol, duration_seconds=0.4, amplitude=10000):
-    (tmp_path / "phonemes").mkdir(exist_ok=True)
     n = int(audio.SAMPLE_RATE * duration_seconds)
     samples = np.ones(n, dtype=np.int16) * amplitude
-    audio.write_wav(tmp_path / "phonemes" / f"{symbol.lower()}.wav", samples)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(audio.CHANNELS)
+        w.setsampwidth(audio.SAMPLE_WIDTH)
+        w.setframerate(audio.SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    return inventory.save_variant(
+        symbol, buf.getvalue(),
+        source="isolated", prev=None, next=None,
+    )
 
 
 def test_phoneme_propose_returns_audio(client, tmp_path):
@@ -631,8 +651,16 @@ def test_phoneme_trim_crops_recording(client, tmp_path):
     burst_start = int(0.3 * audio.SAMPLE_RATE)
     burst_end = int(0.5 * audio.SAMPLE_RATE)
     samples[burst_start:burst_end] = 20000
-    (tmp_path / "phonemes").mkdir(exist_ok=True)
-    audio.write_wav(tmp_path / "phonemes" / "aa.wav", samples)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(audio.CHANNELS)
+        w.setsampwidth(audio.SAMPLE_WIDTH)
+        w.setframerate(audio.SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    variant_id = inventory.save_variant(
+        "AA", buf.getvalue(),
+        source="isolated", prev=None, next=None,
+    )
 
     r = client.post("/api/phoneme/trim", json={
         "symbol": "AA",
@@ -642,9 +670,10 @@ def test_phoneme_trim_crops_recording(client, tmp_path):
     assert r.status_code == 200
     body = r.get_json()
     assert body["symbol"] == "AA"
+    assert body["variant_id"] == variant_id
     assert 395 <= body["duration_ms"] <= 405
 
-    cropped, _ = audio.read_wav(tmp_path / "phonemes" / "aa.wav")
+    cropped, _ = audio.read_wav(inventory.variant_path("AA", variant_id))
     assert int(np.max(np.abs(cropped))) >= audio.PEAK_TARGET - 1
 
 
@@ -692,6 +721,113 @@ def test_sentence_audio_returns_not_found(client, tmp_path):
 def test_sentence_audio_400_when_sentence_missing(client):
     r = client.post("/api/sentence/audio", json={})
     assert r.status_code == 400
+
+
+def test_extract_save_records_prev_next_per_position(client, tmp_path):
+    """For a multi-phoneme word, the first phoneme variant has prev=None,
+    the last has next=None, and any middle phoneme has both neighbours
+    set."""
+    _seed_word(tmp_path, "hello")
+    pr = client.post("/api/extract/propose", json={"word": "hello"})
+    prop = pr.get_json()
+    phs = [entry["symbol"] for entry in prop["phonemes"]]
+    save_flags = [True] * len(phs)
+    r = client.post("/api/extract/save", json={
+        "word": "hello",
+        "spans": prop["spans"],
+        "save": save_flags,
+    })
+    assert r.status_code == 200
+    saved = r.get_json()["saved"]
+    # Pick out variant metadata for each saved phoneme.
+    for i, entry in enumerate(saved):
+        meta_list = inventory.list_variants(entry["symbol"])
+        meta = next(m for m in meta_list if m["id"] == entry["variant_id"])
+        expected_prev = phs[i - 1] if i > 0 else None
+        expected_next = phs[i + 1] if i < len(phs) - 1 else None
+        assert meta["prev"] == expected_prev
+        assert meta["next"] == expected_next
+        assert meta["source"] == "hello"
+
+
+def test_variants_route_lists_all(client, tmp_path):
+    wav = _make_wav_bytes()
+    vid1 = inventory.save_variant("AA", wav, source="isolated", prev=None, next=None)
+    vid2 = inventory.save_variant("AA", wav, source="hello", prev="HH", next="L")
+    r = client.get("/api/phoneme/variants?symbol=AA")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["symbol"] == "AA"
+    ids = [v["id"] for v in body["variants"]]
+    assert set(ids) == {vid1, vid2}
+
+
+def test_variants_route_400_unknown_symbol(client):
+    r = client.get("/api/phoneme/variants?symbol=QQ")
+    assert r.status_code == 400
+
+
+def test_variants_route_400_missing_symbol(client):
+    r = client.get("/api/phoneme/variants")
+    assert r.status_code == 400
+
+
+def test_variant_delete_204_then_404(client, tmp_path):
+    vid = inventory.save_variant("AA", _make_wav_bytes(),
+                                 source="isolated", prev=None, next=None)
+    r = client.delete(f"/api/phoneme/variants?symbol=AA&id={vid}")
+    assert r.status_code == 204
+    assert not inventory.variant_path("AA", vid).exists()
+    r = client.delete(f"/api/phoneme/variants?symbol=AA&id={vid}")
+    assert r.status_code == 404
+
+
+def test_phoneme_propose_accepts_variant_id(client, tmp_path):
+    """Two variants exist; passing variant_id selects the older one
+    instead of defaulting to most-recent."""
+    wav = _make_wav_bytes()
+    older = inventory.save_variant("AA", wav, source="isolated", prev=None, next=None)
+    inventory.save_variant("AA", wav, source="hello", prev="HH", next="L")
+    r = client.post("/api/phoneme/propose", json={"symbol": "AA", "variant_id": older})
+    assert r.status_code == 200
+    assert r.get_json()["variant_id"] == older
+
+
+def test_phoneme_propose_404_for_unknown_variant_id(client, tmp_path):
+    inventory.save_variant("AA", _make_wav_bytes(),
+                           source="isolated", prev=None, next=None)
+    r = client.post("/api/phoneme/propose", json={"symbol": "AA", "variant_id": "nope"})
+    assert r.status_code == 404
+
+
+def test_phoneme_trim_targets_named_variant(client, tmp_path):
+    """Trimming with variant_id overwrites only that specific variant;
+    the other variant is untouched."""
+    n = audio.SAMPLE_RATE  # 1 s recordings
+    samples = np.ones(n, dtype=np.int16) * 10000
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(audio.CHANNELS)
+        w.setsampwidth(audio.SAMPLE_WIDTH)
+        w.setframerate(audio.SAMPLE_RATE)
+        w.writeframes(samples.tobytes())
+    wav = buf.getvalue()
+    target = inventory.save_variant("AA", wav, source="isolated", prev=None, next=None)
+    other = inventory.save_variant("AA", wav, source="isolated", prev=None, next=None)
+
+    r = client.post("/api/phoneme/trim", json={
+        "symbol": "AA", "variant_id": target,
+        "start_ms": 100, "end_ms": 400,
+    })
+    assert r.status_code == 200
+    assert r.get_json()["variant_id"] == target
+
+    target_samples, _ = audio.read_wav(inventory.variant_path("AA", target))
+    other_samples, _ = audio.read_wav(inventory.variant_path("AA", other))
+    target_ms = int(len(target_samples) * 1000 / audio.SAMPLE_RATE)
+    other_ms = int(len(other_samples) * 1000 / audio.SAMPLE_RATE)
+    assert 295 <= target_ms <= 305
+    assert 995 <= other_ms <= 1005
 
 
 def test_phoneme_trim_400_when_inverted(client, tmp_path):

@@ -129,20 +129,20 @@ def create_app() -> Flask:
 
         samples = audio.peak_normalise(samples)
 
-        overwrite = request.args.get("overwrite") == "true"
-        if inventory.has_phoneme(phoneme) and not overwrite:
-            return jsonify({"error": "phoneme exists", "phoneme": phoneme}), 409
-
         out = io.BytesIO()
         with wave.open(out, "wb") as w:
             w.setnchannels(audio.CHANNELS)
             w.setsampwidth(audio.SAMPLE_WIDTH)
             w.setframerate(audio.SAMPLE_RATE)
             w.writeframes(samples.tobytes())
-        inventory.save_phoneme(phoneme, out.getvalue())
+        variant_id = inventory.save_variant(
+            phoneme, out.getvalue(),
+            source="isolated", prev=None, next=None,
+        )
 
-        log.info("record/phoneme: saved %r (%d samples)", phoneme, len(samples))
-        return jsonify({"phoneme": phoneme}), 200
+        log.info("record/phoneme: saved %r variant=%s (%d samples)",
+                 phoneme, variant_id, len(samples))
+        return jsonify({"phoneme": phoneme, "variant_id": variant_id}), 200
 
     @flask_app.route("/api/phoneme-inventory")
     def api_phoneme_inventory():
@@ -248,7 +248,7 @@ def create_app() -> Flask:
                 return jsonify({"error": "span out of range"}), 400
 
         min_slice_samples = int(audio.SAMPLE_RATE * 0.030)
-        saved: list[str] = []
+        saved: list[dict] = []
         skipped: list[dict] = []
         for i, should_save in enumerate(save_flags):
             if not should_save:
@@ -266,8 +266,13 @@ def create_app() -> Flask:
                 w.setsampwidth(audio.SAMPLE_WIDTH)
                 w.setframerate(audio.SAMPLE_RATE)
                 w.writeframes(normalised.tobytes())
-            inventory.save_phoneme(symbol, out.getvalue())
-            saved.append(symbol)
+            prev_ph = phs[i - 1] if i > 0 else None
+            next_ph = phs[i + 1] if i < len(phs) - 1 else None
+            variant_id = inventory.save_variant(
+                symbol, out.getvalue(),
+                source=word, prev=prev_ph, next=next_ph,
+            )
+            saved.append({"symbol": symbol, "variant_id": variant_id})
 
         log.info("extract/save: word=%r saved=%s skipped=%s", word, saved, skipped)
         return jsonify({"saved": saved, "skipped": skipped}), 200
@@ -312,6 +317,27 @@ def create_app() -> Flask:
                  word, int(start_ms), int(end_ms), new_duration_ms)
         return jsonify({"word": word, "duration_ms": new_duration_ms}), 200
 
+    def _resolve_variant(symbol, variant_id):
+        """Pick the variant WAV path for a phoneme + optional variant ID.
+        Returns (path, variant_id) on success, or (None, error_response).
+        """
+        variants = inventory.list_variants(symbol)
+        if not variants:
+            return None, (jsonify({"error": "phoneme not recorded", "symbol": symbol}), 404)
+        if variant_id is None:
+            chosen = variants[-1]   # most recent
+        else:
+            match = next((v for v in variants if v["id"] == variant_id), None)
+            if match is None:
+                return None, (jsonify({"error": "variant not found",
+                                       "symbol": symbol, "id": variant_id}), 404)
+            chosen = match
+        path = inventory.variant_path(symbol, chosen["id"])
+        if not path.exists():
+            return None, (jsonify({"error": "variant not found",
+                                   "symbol": symbol, "id": chosen["id"]}), 404)
+        return (path, chosen["id"]), None
+
     @flask_app.route("/api/phoneme/propose", methods=["POST"])
     def api_phoneme_propose():
         data = request.get_json(silent=True) or {}
@@ -320,16 +346,20 @@ def create_app() -> Flask:
             return jsonify({"error": "symbol is required"}), 400
         if symbol not in phonemes.PHONEMES_SET:
             return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
-        if not inventory.has_phoneme(symbol):
-            return jsonify({"error": "phoneme not recorded", "symbol": symbol}), 404
 
-        samples, _ = audio.read_wav(inventory.phoneme_path(symbol))
+        variant_id = data.get("variant_id")
+        resolved, err = _resolve_variant(symbol, variant_id)
+        if err is not None:
+            return err
+        wav_path, resolved_id = resolved
+
+        samples, _ = audio.read_wav(wav_path)
         audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
-        wav_bytes = inventory.phoneme_path(symbol).read_bytes()
-        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+        audio_b64 = base64.b64encode(wav_path.read_bytes()).decode("ascii")
 
         return jsonify({
             "symbol": symbol,
+            "variant_id": resolved_id,
             "example": phonemes.PHONEME_EXAMPLES.get(symbol, ""),
             "audio_duration_ms": audio_duration_ms,
             "audio": audio_b64,
@@ -343,8 +373,12 @@ def create_app() -> Flask:
             return jsonify({"error": "symbol is required"}), 400
         if symbol not in phonemes.PHONEMES_SET:
             return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
-        if not inventory.has_phoneme(symbol):
-            return jsonify({"error": "phoneme not recorded", "symbol": symbol}), 404
+
+        variant_id = data.get("variant_id")
+        resolved, err = _resolve_variant(symbol, variant_id)
+        if err is not None:
+            return err
+        wav_path, resolved_id = resolved
 
         start_ms = data.get("start_ms")
         end_ms = data.get("end_ms")
@@ -353,7 +387,7 @@ def create_app() -> Flask:
         if end_ms <= start_ms:
             return jsonify({"error": "end_ms must be greater than start_ms"}), 400
 
-        samples, _ = audio.read_wav(inventory.phoneme_path(symbol))
+        samples, _ = audio.read_wav(wav_path)
         duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
         if start_ms < 0 or end_ms > duration_ms + 5:
             return jsonify({"error": "trim out of range"}), 400
@@ -371,12 +405,48 @@ def create_app() -> Flask:
             w.setsampwidth(audio.SAMPLE_WIDTH)
             w.setframerate(audio.SAMPLE_RATE)
             w.writeframes(normalised.tobytes())
-        inventory.save_phoneme(symbol, out.getvalue())
+        # Trim overwrites the targeted variant's WAV in place and refreshes
+        # its sidecar's duration_ms — no new variant is created.
+        wav_path.write_bytes(out.getvalue())
+        sidecar = wav_path.with_suffix(".json")
+        try:
+            import json as _json
+            meta = _json.loads(sidecar.read_text(encoding="utf-8"))
+            meta["duration_ms"] = int(len(normalised) * 1000 / audio.SAMPLE_RATE)
+            sidecar.write_text(_json.dumps(meta), encoding="utf-8")
+        except (OSError, ValueError):
+            pass
 
         new_duration_ms = int(len(normalised) * 1000 / audio.SAMPLE_RATE)
-        log.info("phoneme/trim: symbol=%r %d-%dms -> %dms",
-                 symbol, int(start_ms), int(end_ms), new_duration_ms)
-        return jsonify({"symbol": symbol, "duration_ms": new_duration_ms}), 200
+        log.info("phoneme/trim: symbol=%r variant=%s %d-%dms -> %dms",
+                 symbol, resolved_id, int(start_ms), int(end_ms), new_duration_ms)
+        return jsonify({"symbol": symbol, "variant_id": resolved_id,
+                        "duration_ms": new_duration_ms}), 200
+
+    @flask_app.route("/api/phoneme/variants", methods=["GET"])
+    def api_phoneme_variants():
+        symbol = str(request.args.get("symbol", "")).strip().upper()
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        if symbol not in phonemes.PHONEMES_SET:
+            return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
+        variants = inventory.list_variants(symbol)
+        return jsonify({"symbol": symbol, "variants": variants}), 200
+
+    @flask_app.route("/api/phoneme/variants", methods=["DELETE"])
+    def api_phoneme_variants_delete():
+        symbol = str(request.args.get("symbol", "")).strip().upper()
+        variant_id = request.args.get("id", "")
+        if not symbol:
+            return jsonify({"error": "symbol is required"}), 400
+        if symbol not in phonemes.PHONEMES_SET:
+            return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
+        if not variant_id:
+            return jsonify({"error": "id is required"}), 400
+        if not inventory.delete_variant(symbol, variant_id):
+            return jsonify({"error": "variant not found",
+                            "symbol": symbol, "id": variant_id}), 404
+        return ("", 204)
 
     @flask_app.route("/api/sentence/record", methods=["POST"])
     def api_sentence_record():

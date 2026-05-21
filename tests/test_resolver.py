@@ -32,16 +32,17 @@ def test_resolver_chain_contains_word_resolver():
 
 
 def test_phoneme_resolver_hit(temp_inventory):
-    inventory.save_phoneme("AA", b"fakewav")
+    vid = inventory.save_variant("AA", b"fakewav", source="isolated", prev=None, next=None)
     r = resolver.PhonemeResolver()
-    assert r.resolve("AA") == temp_inventory / "phonemes" / "aa.wav"
+    assert r.resolve("AA") == temp_inventory / "phonemes" / "aa" / f"{vid}.wav"
 
 
 def test_phoneme_resolver_case_insensitive(temp_inventory):
-    inventory.save_phoneme("AA", b"fakewav")
+    vid = inventory.save_variant("AA", b"fakewav", source="isolated", prev=None, next=None)
+    expected = temp_inventory / "phonemes" / "aa" / f"{vid}.wav"
     r = resolver.PhonemeResolver()
-    assert r.resolve("aa") == temp_inventory / "phonemes" / "aa.wav"
-    assert r.resolve("Aa") == temp_inventory / "phonemes" / "aa.wav"
+    assert r.resolve("aa") == expected
+    assert r.resolve("Aa") == expected
 
 
 def test_phoneme_resolver_miss_no_file(temp_inventory):

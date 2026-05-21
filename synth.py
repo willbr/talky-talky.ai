@@ -82,12 +82,14 @@ def synthesise(
 
         phoneme_paths = []
         all_resolved = True
-        for ph in phs:
-            ph_path = None
-            for r in resolvers:
-                ph_path = r.resolve(ph)
-                if ph_path is not None:
-                    break
+        for i, ph in enumerate(phs):
+            # Phoneme slots inside a CMUdict-decomposed word always look up
+            # variants directly — the resolver chain is for top-level token
+            # resolution (word vs raw phoneme), not for inner phoneme slots
+            # where we also know the surrounding context.
+            prev_ph = phs[i - 1] if i > 0 else None
+            next_ph = phs[i + 1] if i < len(phs) - 1 else None
+            ph_path = inventory.best_phoneme_variant(ph, prev_ph, next_ph)
             if ph_path is None:
                 all_resolved = False
                 break
