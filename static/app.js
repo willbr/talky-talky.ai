@@ -775,8 +775,12 @@ function buildEditorDom() {
   const playAllBtn = document.createElement('button');
   playAllBtn.className = 'play-all';
   playAllBtn.textContent = '▶ Play';
-  playAllBtn.title = 'Play the entire recording';
-  playAllBtn.addEventListener('click', () => playSlice(0, editor.audioDurationMs));
+  playAllBtn.title = 'Play the trimmed selection (between the outer boundaries)';
+  playAllBtn.addEventListener('click', () => {
+    const start = editor.boundariesMs[0];
+    const end = editor.boundariesMs[editor.boundariesMs.length - 1];
+    playSlice(start, end);
+  });
 
   const trimBtn = document.createElement('button');
   trimBtn.className = 'trim';
