@@ -175,6 +175,10 @@ def create_app() -> Flask:
         samples, _ = audio.read_wav(inventory.path(word))
         audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
         boundaries_ms = extraction.propose_boundaries(samples, phs)
+        spans = [
+            {"start_ms": int(boundaries_ms[i]), "end_ms": int(boundaries_ms[i + 1])}
+            for i in range(len(phs))
+        ]
         wav_bytes = inventory.path(word).read_bytes()
         audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
 
@@ -197,7 +201,7 @@ def create_app() -> Flask:
             "audio_duration_ms": audio_duration_ms,
             "audio": audio_b64,
             "phonemes": phoneme_payload,
-            "boundaries_ms": boundaries_ms,
+            "spans": spans,
         }), 200
 
     @flask_app.route("/api/extract/save", methods=["POST"])
@@ -210,20 +214,26 @@ def create_app() -> Flask:
         if not inventory.has(word):
             return jsonify({"error": "word not recorded", "word": word}), 404
 
-        boundaries_ms = data.get("boundaries_ms")
+        spans = data.get("spans")
         save_flags = data.get("save")
-        if not isinstance(boundaries_ms, list):
-            return jsonify({"error": "boundaries_ms is required"}), 400
+        if not isinstance(spans, list) or not spans:
+            return jsonify({"error": "spans is required"}), 400
         if not isinstance(save_flags, list):
             return jsonify({"error": "save is required"}), 400
-        if len(boundaries_ms) < 2:
-            return jsonify({"error": "boundaries_ms must have at least two entries"}), 400
-        if len(save_flags) != len(boundaries_ms) - 1:
-            return jsonify({"error": "save length must equal boundaries_ms length minus one"}), 400
+        if len(save_flags) != len(spans):
+            return jsonify({"error": "save length must equal spans length"}), 400
 
-        for i in range(len(boundaries_ms) - 1):
-            if boundaries_ms[i + 1] < boundaries_ms[i]:
-                return jsonify({"error": "boundaries must be non-decreasing"}), 400
+        for s in spans:
+            if (not isinstance(s, dict)
+                    or not isinstance(s.get("start_ms"), (int, float))
+                    or not isinstance(s.get("end_ms"), (int, float))):
+                return jsonify({"error": "each span must have start_ms and end_ms"}), 400
+            if s["end_ms"] <= s["start_ms"]:
+                return jsonify({"error": "span end_ms must be greater than start_ms"}), 400
+
+        for prev, curr in zip(spans, spans[1:]):
+            if curr["start_ms"] < prev["end_ms"]:
+                return jsonify({"error": "spans must not overlap"}), 400
 
         phs = phonemes.word_to_phonemes(word)
         if phs is None:
@@ -233,9 +243,9 @@ def create_app() -> Flask:
 
         samples, _ = audio.read_wav(inventory.path(word))
         audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
-        for b in boundaries_ms:
-            if not isinstance(b, (int, float)) or b < 0 or b > audio_duration_ms + 5:
-                return jsonify({"error": "boundary out of range"}), 400
+        for s in spans:
+            if s["start_ms"] < 0 or s["end_ms"] > audio_duration_ms + 5:
+                return jsonify({"error": "span out of range"}), 400
 
         min_slice_samples = int(audio.SAMPLE_RATE * 0.030)
         saved: list[str] = []
@@ -244,7 +254,7 @@ def create_app() -> Flask:
             if not should_save:
                 continue
             symbol = phs[i]
-            slice_arr = audio.slice_samples(samples, int(boundaries_ms[i]), int(boundaries_ms[i + 1]))
+            slice_arr = audio.slice_samples(samples, int(spans[i]["start_ms"]), int(spans[i]["end_ms"]))
             if len(slice_arr) < min_slice_samples:
                 skipped.append({"symbol": symbol, "reason": "too short"})
                 continue

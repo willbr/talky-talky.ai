@@ -736,13 +736,13 @@ async function openExtractEditor(word) {
     audioBase64: prop.audio,
     audioDurationMs: prop.audio_duration_ms,
     phonemes: prop.phonemes,
-    boundariesMs: prop.boundaries_ms.slice(),
+    phonemeSpansMs: prop.spans.map((s) => ({ start_ms: s.start_ms, end_ms: s.end_ms })),
     audioBuffer: null,
     audioCtx: null,
     container: null,
     canvas: null,
     samples: null,
-    draggingI: null,
+    draggingHandle: null,   // null | { phonemeIdx, kind: 'start' | 'end' }
     viewStartMs: 0,
     viewEndMs: prop.audio_duration_ms,
     trimBtn: null,
@@ -756,8 +756,9 @@ async function openExtractEditor(word) {
 
 function applyTrim() {
   if (!editor) return;
-  const first = editor.boundariesMs[0];
-  const last = editor.boundariesMs[editor.boundariesMs.length - 1];
+  const spans = editor.phonemeSpansMs;
+  const first = spans[0].start_ms;
+  const last = spans[spans.length - 1].end_ms;
   const span = Math.max(20, last - first);
   const margin = Math.round(span * 0.05);
   editor.viewStartMs = Math.max(0, first - margin);
@@ -786,9 +787,8 @@ function buildEditorDom() {
   playAllBtn.textContent = '▶ Play';
   playAllBtn.title = 'Play the trimmed selection (between the outer boundaries)';
   playAllBtn.addEventListener('click', () => {
-    const start = editor.boundariesMs[0];
-    const end = editor.boundariesMs[editor.boundariesMs.length - 1];
-    playSlice(start, end);
+    const spans = editor.phonemeSpansMs;
+    playSlice(spans[0].start_ms, spans[spans.length - 1].end_ms);
   });
 
   const trimBtn = document.createElement('button');
@@ -851,12 +851,14 @@ function buildEditorDom() {
     play.title = `Play ${ph.symbol}`;
     play.addEventListener('click', (e) => {
       e.preventDefault();
-      playSlice(editor.boundariesMs[i], editor.boundariesMs[i + 1]);
+      const span = editor.phonemeSpansMs[i];
+      playSlice(span.start_ms, span.end_ms);
     });
 
     const duration = document.createElement('span');
     duration.className = 'duration';
-    duration.textContent = `${editor.boundariesMs[i + 1] - editor.boundariesMs[i]} ms`;
+    const initSpan = editor.phonemeSpansMs[i];
+    duration.textContent = `${initSpan.end_ms - initSpan.start_ms} ms`;
 
     row.appendChild(checkbox);
     row.appendChild(sym);
@@ -963,28 +965,37 @@ function drawWaveform() {
     ctx.fillRect(x, mid - y, 1, Math.max(1, y * 2));
   }
 
-  const firstBound = editor.boundariesMs[0];
-  const lastBound = editor.boundariesMs[editor.boundariesMs.length - 1];
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-  if (firstBound > viewStart) {
-    const leftEnd = Math.min(w, ((firstBound - viewStart) / viewSpan) * w);
-    ctx.fillRect(0, 0, leftEnd, h);
+  // Build the list of "non-phoneme" regions in absolute ms: pre-first,
+  // any internal gaps between consecutive phoneme spans, and post-last.
+  const spans = editor.phonemeSpansMs;
+  const gaps = [];
+  gaps.push([0, spans[0].start_ms]);
+  for (let i = 0; i < spans.length - 1; i++) {
+    gaps.push([spans[i].end_ms, spans[i + 1].start_ms]);
   }
-  if (lastBound < viewEnd) {
-    const rightStart = Math.max(0, ((lastBound - viewStart) / viewSpan) * w);
-    ctx.fillRect(rightStart, 0, w - rightStart, h);
+  gaps.push([spans[spans.length - 1].end_ms, editor.audioDurationMs]);
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+  for (const [g0, g1] of gaps) {
+    if (g1 <= g0) continue;
+    const x0 = Math.max(0, ((g0 - viewStart) / viewSpan) * w);
+    const x1 = Math.min(w, ((g1 - viewStart) / viewSpan) * w);
+    if (x1 > x0) ctx.fillRect(x0, 0, x1 - x0, h);
   }
 
   ctx.strokeStyle = '#4ea8de';
   ctx.lineWidth = 2;
-  for (const b of editor.boundariesMs) {
-    // Skip lines outside the visible range.
-    if (b < viewStart || b > viewEnd) continue;
-    const x = ((b - viewStart) / viewSpan) * w;
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, h);
-    ctx.stroke();
+  // Draw both handles for every span (2N lines, possibly coincident when
+  // adjacent phonemes are contiguous).
+  for (const span of spans) {
+    for (const b of [span.start_ms, span.end_ms]) {
+      if (b < viewStart || b > viewEnd) continue;
+      const x = ((b - viewStart) / viewSpan) * w;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
   }
 }
 
@@ -992,23 +1003,31 @@ function recalcBoundaries() {
   if (!editor) return;
   const n = editor.phonemes.length;
   if (n === 0) return;
-  const first = editor.boundariesMs[0];
-  const last = editor.boundariesMs[n];
-  const span = Math.max(0, last - first);
+  const spans = editor.phonemeSpansMs;
+  const first = spans[0].start_ms;
+  const last = spans[n - 1].end_ms;
+  const totalRange = Math.max(0, last - first);
 
   const priors = editor.phonemes.map((p) => (p.prior_ms || 100));
   const totalPrior = priors.reduce((a, b) => a + b, 0);
   if (totalPrior === 0) return;
 
-  const newBounds = [first];
+  // Redistribute contiguously between current outer endpoints — recalc
+  // intentionally collapses any internal gaps; if the user wants gaps
+  // back, they re-introduce them with drag.
+  const newSpans = [];
   let cumulative = 0;
-  for (let i = 0; i < n - 1; i++) {
+  for (let i = 0; i < n; i++) {
+    const startFrac = cumulative / totalPrior;
     cumulative += priors[i];
-    newBounds.push(first + Math.round((cumulative * span) / totalPrior));
+    const endFrac = cumulative / totalPrior;
+    newSpans.push({
+      start_ms: first + Math.round(startFrac * totalRange),
+      end_ms: first + Math.round(endFrac * totalRange),
+    });
   }
-  newBounds.push(last);
 
-  editor.boundariesMs = newBounds;
+  editor.phonemeSpansMs = newSpans;
   drawWaveform();
   updateRowDurations();
 }
@@ -1044,39 +1063,51 @@ function attachCanvasDrag() {
     if (!editor) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    let nearestI = -1;
+    let nearest = null;
     let nearestPx = Infinity;
-    for (let i = 0; i < editor.boundariesMs.length; i++) {
-      const bx = msToPx(editor.boundariesMs[i]);
-      const dist = Math.abs(bx - x);
-      if (dist < nearestPx) {
-        nearestPx = dist;
-        nearestI = i;
+    const spans = editor.phonemeSpansMs;
+    for (let i = 0; i < spans.length; i++) {
+      for (const kind of ['start', 'end']) {
+        const ms = kind === 'start' ? spans[i].start_ms : spans[i].end_ms;
+        const dist = Math.abs(msToPx(ms) - x);
+        if (dist < nearestPx) {
+          nearestPx = dist;
+          nearest = { phonemeIdx: i, kind };
+        }
       }
     }
-    if (nearestI >= 0 && nearestPx <= HANDLE_PX) {
-      editor.draggingI = nearestI;
+    if (nearest && nearestPx <= HANDLE_PX) {
+      editor.draggingHandle = nearest;
     }
   });
 
   window.addEventListener('mousemove', (e) => {
-    if (!editor || editor.draggingI === null) return;
+    if (!editor || !editor.draggingHandle) return;
     const rect = canvas.getBoundingClientRect();
     const x = Math.max(0, Math.min(canvas.width, e.clientX - rect.left));
     let ms = pxToMs(x);
-    const i = editor.draggingI;
-    const minMs = i > 0 ? editor.boundariesMs[i - 1] + 5 : 0;
-    const maxMs = i < editor.boundariesMs.length - 1
-      ? editor.boundariesMs[i + 1] - 5
-      : editor.audioDurationMs;
+
+    const { phonemeIdx: i, kind } = editor.draggingHandle;
+    const spans = editor.phonemeSpansMs;
+    let minMs, maxMs;
+    if (kind === 'start') {
+      minMs = i > 0 ? spans[i - 1].end_ms : 0;
+      maxMs = spans[i].end_ms - 5;
+    } else {
+      minMs = spans[i].start_ms + 5;
+      maxMs = i < spans.length - 1 ? spans[i + 1].start_ms : editor.audioDurationMs;
+    }
     ms = Math.max(minMs, Math.min(maxMs, ms));
-    editor.boundariesMs[i] = Math.round(ms);
+
+    if (kind === 'start') spans[i].start_ms = Math.round(ms);
+    else spans[i].end_ms = Math.round(ms);
+
     drawWaveform();
     updateRowDurations();
   });
 
   window.addEventListener('mouseup', () => {
-    if (editor) editor.draggingI = null;
+    if (editor) editor.draggingHandle = null;
   });
 }
 
@@ -1085,25 +1116,27 @@ function updateRowDurations() {
   const rows = editor.container.querySelectorAll('.row');
   for (const row of rows) {
     const i = parseInt(row.dataset.index, 10);
-    const dur = editor.boundariesMs[i + 1] - editor.boundariesMs[i];
+    const span = editor.phonemeSpansMs[i];
     const durEl = row.querySelector('.duration');
-    if (durEl) durEl.textContent = `${dur} ms`;
+    if (durEl) durEl.textContent = `${span.end_ms - span.start_ms} ms`;
   }
   updateTrimEnabled();
 }
 
 function updateTrimEnabled() {
   if (!editor || !editor.trimSaveBtn) return;
-  const first = editor.boundariesMs[0];
-  const last = editor.boundariesMs[editor.boundariesMs.length - 1];
+  const spans = editor.phonemeSpansMs;
+  const first = spans[0].start_ms;
+  const last = spans[spans.length - 1].end_ms;
   editor.trimSaveBtn.disabled = (first === 0 && last === editor.audioDurationMs);
 }
 
 async function saveTrimFromEditor() {
   if (!editor) return;
   const word = editor.word;
-  const start = editor.boundariesMs[0];
-  const end = editor.boundariesMs[editor.boundariesMs.length - 1];
+  const spans = editor.phonemeSpansMs;
+  const start = spans[0].start_ms;
+  const end = spans[spans.length - 1].end_ms;
   const ok = window.confirm(
     `Trim "${word}" to ${start}–${end} ms? This overwrites the recording.`
   );
@@ -1157,7 +1190,7 @@ async function playSlice(startMs, endMs) {
 async function savePhonemesFromEditor() {
   if (!editor) return;
   const word = editor.word;
-  const boundariesMs = editor.boundariesMs.slice();
+  const spans = editor.phonemeSpansMs.map((s) => ({ start_ms: s.start_ms, end_ms: s.end_ms }));
   const checkboxes = editor.container.querySelectorAll('.row input[type=checkbox]');
   const saveFlags = Array.from(checkboxes).map((cb) => cb.checked);
 
@@ -1166,7 +1199,7 @@ async function savePhonemesFromEditor() {
     r = await fetch('/api/extract/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word, boundaries_ms: boundariesMs, save: saveFlags }),
+      body: JSON.stringify({ word, spans, save: saveFlags }),
     });
   } catch (e) {
     setStatus(`Save phonemes failed: ${e.message}`, true);

@@ -338,9 +338,11 @@ def test_extract_propose_returns_audio_and_boundaries(client, tmp_path):
         assert isinstance(entry["recorded"], bool)
         assert "prior_ms" in entry
         assert isinstance(entry["prior_ms"], int) and entry["prior_ms"] > 0
-    assert len(data["boundaries_ms"]) == len(data["phonemes"]) + 1
-    for i in range(len(data["boundaries_ms"]) - 1):
-        assert data["boundaries_ms"][i] <= data["boundaries_ms"][i + 1]
+    assert len(data["spans"]) == len(data["phonemes"])
+    for s in data["spans"]:
+        assert s["start_ms"] <= s["end_ms"]
+    for prev, curr in zip(data["spans"], data["spans"][1:]):
+        assert prev["end_ms"] <= curr["start_ms"]
 
 
 def test_extract_propose_404_when_word_not_recorded(client):
@@ -385,7 +387,7 @@ def test_extract_save_writes_selected_phonemes(client, tmp_path):
 
     r = client.post("/api/extract/save", json={
         "word": "hello",
-        "boundaries_ms": prop["boundaries_ms"],
+        "spans": prop["spans"],
         "save": save_flags,
     })
     assert r.status_code == 200
@@ -406,7 +408,7 @@ def test_extract_save_skips_phonemes_with_save_false(client, tmp_path):
 
     r = client.post("/api/extract/save", json={
         "word": "hello",
-        "boundaries_ms": prop["boundaries_ms"],
+        "spans": prop["spans"],
         "save": save_flags,
     })
     assert r.status_code == 200
@@ -421,17 +423,19 @@ def test_extract_save_skips_short_slices(client, tmp_path):
     pr = client.post("/api/extract/propose", json={"word": "hello"})
     prop = pr.get_json()
     n = len(prop["phonemes"])
-    bounds = list(prop["boundaries_ms"])
+    spans = [dict(s) for s in prop["spans"]]
     if n >= 2:
-        bounds[2] = bounds[1] + 1
-        for i in range(2, len(bounds) - 1):
-            if bounds[i + 1] < bounds[i]:
-                bounds[i + 1] = bounds[i]
+        spans[1]["end_ms"] = spans[1]["start_ms"] + 1
+        for i in range(2, n):
+            if spans[i]["start_ms"] < spans[i - 1]["end_ms"]:
+                spans[i]["start_ms"] = spans[i - 1]["end_ms"]
+            if spans[i]["end_ms"] < spans[i]["start_ms"]:
+                spans[i]["end_ms"] = spans[i]["start_ms"]
     save_flags = [True] * n
 
     r = client.post("/api/extract/save", json={
         "word": "hello",
-        "boundaries_ms": bounds,
+        "spans": spans,
         "save": save_flags,
     })
     assert r.status_code == 200
@@ -442,18 +446,18 @@ def test_extract_save_skips_short_slices(client, tmp_path):
     assert "too short" in skipped_reasons
 
 
-def test_extract_save_rejects_non_monotonic_boundaries(client, tmp_path):
+def test_extract_save_rejects_overlapping_spans(client, tmp_path):
     _seed_word(tmp_path, "hello")
     pr = client.post("/api/extract/propose", json={"word": "hello"})
     prop = pr.get_json()
-    bounds = list(prop["boundaries_ms"])
-    if len(bounds) >= 3:
-        bounds[1], bounds[2] = bounds[2], bounds[1]
+    spans = [dict(s) for s in prop["spans"]]
+    # Force overlap: pull span[1] back into span[0].
+    spans[1]["start_ms"] = spans[0]["start_ms"]
 
     r = client.post("/api/extract/save", json={
         "word": "hello",
-        "boundaries_ms": bounds,
-        "save": [True] * (len(bounds) - 1),
+        "spans": spans,
+        "save": [True] * len(spans),
     })
     assert r.status_code == 400
 
@@ -464,7 +468,7 @@ def test_extract_save_rejects_length_mismatch(client, tmp_path):
     prop = pr.get_json()
     r = client.post("/api/extract/save", json={
         "word": "hello",
-        "boundaries_ms": prop["boundaries_ms"],
+        "spans": prop["spans"],
         "save": [True],
     })
     assert r.status_code == 400
@@ -484,7 +488,7 @@ def test_extract_save_overwrites_existing_phoneme(client, tmp_path):
 
     r = client.post("/api/extract/save", json={
         "word": "hello",
-        "boundaries_ms": prop["boundaries_ms"],
+        "spans": prop["spans"],
         "save": save_flags,
     })
     assert r.status_code == 200
@@ -494,7 +498,7 @@ def test_extract_save_overwrites_existing_phoneme(client, tmp_path):
 def test_extract_save_404_when_word_not_recorded(client):
     r = client.post("/api/extract/save", json={
         "word": "ghost",
-        "boundaries_ms": [0, 100, 200],
+        "spans": [{"start_ms": 0, "end_ms": 100}, {"start_ms": 100, "end_ms": 200}],
         "save": [True, True],
     })
     assert r.status_code == 404
@@ -506,7 +510,7 @@ def test_extract_save_normalises_word(client, tmp_path):
     prop = pr.get_json()
     r = client.post("/api/extract/save", json={
         "word": "  HELLO!  ",
-        "boundaries_ms": prop["boundaries_ms"],
+        "spans": prop["spans"],
         "save": [True] * len(prop["phonemes"]),
     })
     assert r.status_code == 200
