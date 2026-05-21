@@ -401,8 +401,9 @@ async function compareSynth() {
   const sentence = els.sentenceInput.value.trim();
   if (!sentence) return;
 
-  // Comparison mode hides the single output player.
+  // Comparison mode hides the single output player and its spectrogram.
   els.output.hidden = true;
+  els.outputSpec.hidden = true;
   els.compareOutput.hidden = false;
 
   let normal;
