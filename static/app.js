@@ -444,6 +444,7 @@ function buildEditorDom() {
 
   els.recordPane.insertAdjacentElement('afterend', container);
   editor.container = container;
+  attachCanvasDrag();
 }
 
 async function decodeWaveform() {
@@ -503,5 +504,60 @@ function drawWaveform() {
     ctx.moveTo(x, 0);
     ctx.lineTo(x, h);
     ctx.stroke();
+  }
+}
+
+function attachCanvasDrag() {
+  const canvas = editor.canvas;
+  const HANDLE_PX = 8;   // hit-test radius around a boundary
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (!editor) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    let nearestI = -1;
+    let nearestPx = Infinity;
+    for (let i = 0; i < editor.boundariesMs.length; i++) {
+      const bx = (editor.boundariesMs[i] / editor.audioDurationMs) * canvas.width;
+      const dist = Math.abs(bx - x);
+      if (dist < nearestPx) {
+        nearestPx = dist;
+        nearestI = i;
+      }
+    }
+    if (nearestI >= 0 && nearestPx <= HANDLE_PX) {
+      editor.draggingI = nearestI;
+    }
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!editor || editor.draggingI === null) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.max(0, Math.min(canvas.width, e.clientX - rect.left));
+    let ms = (x / canvas.width) * editor.audioDurationMs;
+    const i = editor.draggingI;
+    const minMs = i > 0 ? editor.boundariesMs[i - 1] + 5 : 0;
+    const maxMs = i < editor.boundariesMs.length - 1
+      ? editor.boundariesMs[i + 1] - 5
+      : editor.audioDurationMs;
+    ms = Math.max(minMs, Math.min(maxMs, ms));
+    editor.boundariesMs[i] = Math.round(ms);
+    drawWaveform();
+    updateRowDurations();
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (editor) editor.draggingI = null;
+  });
+}
+
+function updateRowDurations() {
+  if (!editor || !editor.container) return;
+  const rows = editor.container.querySelectorAll('.row');
+  for (const row of rows) {
+    const i = parseInt(row.dataset.index, 10);
+    const dur = editor.boundariesMs[i + 1] - editor.boundariesMs[i];
+    const durEl = row.querySelector('.duration');
+    if (durEl) durEl.textContent = `${dur} ms`;
   }
 }
