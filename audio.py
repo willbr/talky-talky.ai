@@ -139,3 +139,21 @@ def concatenate(paths_or_groups: "list[Path] | list[list[Path]]") -> bytes:
         w.setframerate(SAMPLE_RATE)
         w.writeframes(output.tobytes())
     return buf.getvalue()
+
+
+def slice_samples(
+    samples: np.ndarray,
+    start_ms: int,
+    end_ms: int,
+    sample_rate: int = SAMPLE_RATE,
+) -> np.ndarray:
+    """Return the samples between two millisecond timestamps.
+
+    Out-of-range inputs are clamped to the valid sample range. An inverted
+    range (end_ms <= start_ms) returns an empty array.
+    """
+    start_i = max(0, int(start_ms * sample_rate / 1000))
+    end_i = min(len(samples), int(end_ms * sample_rate / 1000))
+    if end_i <= start_i:
+        return np.array([], dtype=samples.dtype)
+    return samples[start_i:end_i]

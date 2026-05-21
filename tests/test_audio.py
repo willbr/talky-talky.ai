@@ -181,3 +181,22 @@ def test_concatenate_flat_list_still_works(tmp_path):
 
     inter = int(audio.SAMPLE_RATE * audio.INTER_WORD_SILENCE_SECONDS)
     assert len(loaded) == len(samples_a) + inter + len(samples_b)
+
+
+def test_slice_samples_basic():
+    s = np.ones(audio.SAMPLE_RATE, dtype=np.int16)  # exactly 1 second
+    out = audio.slice_samples(s, 100, 200)
+    expected_len = int(audio.SAMPLE_RATE * 0.1)  # 100 ms worth
+    assert len(out) == expected_len
+
+
+def test_slice_samples_clamps_out_of_range():
+    s = np.ones(audio.SAMPLE_RATE, dtype=np.int16)
+    out = audio.slice_samples(s, -50, 1500)
+    assert len(out) == len(s)
+
+
+def test_slice_samples_inverted_range_returns_empty():
+    s = np.ones(audio.SAMPLE_RATE, dtype=np.int16)
+    out = audio.slice_samples(s, 500, 200)
+    assert len(out) == 0
