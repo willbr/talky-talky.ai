@@ -365,6 +365,9 @@ async function openExtractEditor(word) {
     canvas: null,
     samples: null,
     draggingI: null,
+    viewStartMs: 0,
+    viewEndMs: prop.audio_duration_ms,
+    trimBtn: null,
   };
 
   buildEditorDom();
@@ -387,12 +390,25 @@ function buildEditorDom() {
   header.className = 'editor-header';
   const title = document.createElement('h3');
   title.textContent = `Extracting phonemes from "${editor.word}"`;
+  const trimBtn = document.createElement('button');
+  trimBtn.className = 'trim';
+  trimBtn.textContent = 'Trim';
+  trimBtn.title = 'Zoom canvas to the current boundary selection';
+  trimBtn.addEventListener('click', toggleTrim);
+  editor.trimBtn = trimBtn;
+
   const dismiss = document.createElement('button');
   dismiss.className = 'dismiss';
   dismiss.textContent = '×';
   dismiss.addEventListener('click', closeExtractEditor);
+
+  const controls = document.createElement('div');
+  controls.className = 'editor-controls';
+  controls.appendChild(trimBtn);
+  controls.appendChild(dismiss);
+
   header.appendChild(title);
-  header.appendChild(dismiss);
+  header.appendChild(controls);
   container.appendChild(header);
 
   const canvas = document.createElement('canvas');
@@ -495,17 +511,30 @@ function drawWaveform() {
   ctx.fillRect(0, 0, w, h);
 
   const samples = editor.samples;
+  // Use overall peak for amplitude normalisation so trim doesn't change
+  // the visual scale of the loud region.
   let peak = 0;
   for (let i = 0; i < samples.length; i++) {
     const a = Math.abs(samples[i]);
     if (a > peak) peak = a;
   }
   const threshold = peak * 0.02;
-  const bucketSize = samples.length / w;
+
+  const viewStart = editor.viewStartMs;
+  const viewEnd = editor.viewEndMs;
+  const viewSpan = Math.max(1, viewEnd - viewStart);
+
+  // Sample range covered by the current view.
+  const sampleStart = Math.max(0, Math.floor(
+    viewStart * samples.length / editor.audioDurationMs));
+  const sampleEnd = Math.min(samples.length, Math.ceil(
+    viewEnd * samples.length / editor.audioDurationMs));
+  const visibleLen = Math.max(1, sampleEnd - sampleStart);
+  const bucketSize = visibleLen / w;
 
   for (let x = 0; x < w; x++) {
-    const start = Math.floor(x * bucketSize);
-    const end = Math.floor((x + 1) * bucketSize);
+    const start = sampleStart + Math.floor(x * bucketSize);
+    const end = sampleStart + Math.floor((x + 1) * bucketSize);
     let bucketPeak = 0;
     for (let i = start; i < end; i++) {
       const a = Math.abs(samples[i]);
@@ -520,7 +549,9 @@ function drawWaveform() {
   ctx.strokeStyle = '#4ea8de';
   ctx.lineWidth = 2;
   for (const b of editor.boundariesMs) {
-    const x = (b / editor.audioDurationMs) * w;
+    // Skip lines outside the visible range.
+    if (b < viewStart || b > viewEnd) continue;
+    const x = ((b - viewStart) / viewSpan) * w;
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, h);
@@ -528,9 +559,38 @@ function drawWaveform() {
   }
 }
 
+function toggleTrim() {
+  if (!editor) return;
+  const isTrimmed = editor.viewStartMs > 0 || editor.viewEndMs < editor.audioDurationMs;
+  if (isTrimmed) {
+    editor.viewStartMs = 0;
+    editor.viewEndMs = editor.audioDurationMs;
+    if (editor.trimBtn) editor.trimBtn.textContent = 'Trim';
+  } else {
+    const first = editor.boundariesMs[0];
+    const last = editor.boundariesMs[editor.boundariesMs.length - 1];
+    // Add a small margin (5% of the loud span) so handles aren't right at the edges.
+    const span = Math.max(20, last - first);
+    const margin = Math.round(span * 0.05);
+    editor.viewStartMs = Math.max(0, first - margin);
+    editor.viewEndMs = Math.min(editor.audioDurationMs, last + margin);
+    if (editor.trimBtn) editor.trimBtn.textContent = 'Fit';
+  }
+  drawWaveform();
+}
+
 function attachCanvasDrag() {
   const canvas = editor.canvas;
   const HANDLE_PX = 8;   // hit-test radius around a boundary
+
+  const pxToMs = (x) => {
+    const span = Math.max(1, editor.viewEndMs - editor.viewStartMs);
+    return editor.viewStartMs + (x / canvas.width) * span;
+  };
+  const msToPx = (ms) => {
+    const span = Math.max(1, editor.viewEndMs - editor.viewStartMs);
+    return ((ms - editor.viewStartMs) / span) * canvas.width;
+  };
 
   canvas.addEventListener('mousedown', (e) => {
     if (!editor) return;
@@ -539,7 +599,7 @@ function attachCanvasDrag() {
     let nearestI = -1;
     let nearestPx = Infinity;
     for (let i = 0; i < editor.boundariesMs.length; i++) {
-      const bx = (editor.boundariesMs[i] / editor.audioDurationMs) * canvas.width;
+      const bx = msToPx(editor.boundariesMs[i]);
       const dist = Math.abs(bx - x);
       if (dist < nearestPx) {
         nearestPx = dist;
@@ -555,7 +615,7 @@ function attachCanvasDrag() {
     if (!editor || editor.draggingI === null) return;
     const rect = canvas.getBoundingClientRect();
     const x = Math.max(0, Math.min(canvas.width, e.clientX - rect.left));
-    let ms = (x / canvas.width) * editor.audioDurationMs;
+    let ms = pxToMs(x);
     const i = editor.draggingI;
     const minMs = i > 0 ? editor.boundariesMs[i - 1] + 5 : 0;
     const maxMs = i < editor.boundariesMs.length - 1

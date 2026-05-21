@@ -142,6 +142,22 @@ audio { display: block; width: 100%; margin: 0.6rem 0; }
   margin-bottom: 0.6rem;
 }
 
+#phoneme-editor .editor-controls {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+#phoneme-editor .trim {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
 #phoneme-editor .editor-header h3 {
   margin: 0;
   font-size: 1rem;
