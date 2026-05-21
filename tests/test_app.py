@@ -336,3 +336,145 @@ def test_extract_propose_normalises_word(client, tmp_path):
     r = client.post("/api/extract/propose", json={"word": "  HELLO!  "})
     assert r.status_code == 200
     assert r.get_json()["word"] == "hello"
+
+
+def _seed_word(tmp_path, name, duration_seconds=1.0, amplitude=10000):
+    n = int(audio.SAMPLE_RATE * duration_seconds)
+    samples = np.ones(n, dtype=np.int16) * amplitude
+    audio.write_wav(tmp_path / f"{name}.wav", samples)
+
+
+def test_extract_save_writes_selected_phonemes(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    pr = client.post("/api/extract/propose", json={"word": "hello"})
+    prop = pr.get_json()
+    n_phonemes = len(prop["phonemes"])
+    save_flags = [True] * n_phonemes
+
+    r = client.post("/api/extract/save", json={
+        "word": "hello",
+        "boundaries_ms": prop["boundaries_ms"],
+        "save": save_flags,
+    })
+    assert r.status_code == 200
+    body = r.get_json()
+    assert set(body["saved"]) == set(entry["symbol"] for entry in prop["phonemes"])
+    assert body["skipped"] == []
+    for entry in prop["phonemes"]:
+        assert (tmp_path / "phonemes" / f"{entry['symbol'].lower()}.wav").exists()
+
+
+def test_extract_save_skips_phonemes_with_save_false(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    pr = client.post("/api/extract/propose", json={"word": "hello"})
+    prop = pr.get_json()
+    n_phonemes = len(prop["phonemes"])
+    save_flags = [True] * n_phonemes
+    save_flags[1] = False
+
+    r = client.post("/api/extract/save", json={
+        "word": "hello",
+        "boundaries_ms": prop["boundaries_ms"],
+        "save": save_flags,
+    })
+    assert r.status_code == 200
+    body = r.get_json()
+    skipped_symbol = prop["phonemes"][1]["symbol"]
+    assert skipped_symbol not in body["saved"]
+    assert not (tmp_path / "phonemes" / f"{skipped_symbol.lower()}.wav").exists()
+
+
+def test_extract_save_skips_short_slices(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    pr = client.post("/api/extract/propose", json={"word": "hello"})
+    prop = pr.get_json()
+    n = len(prop["phonemes"])
+    bounds = list(prop["boundaries_ms"])
+    if n >= 2:
+        bounds[2] = bounds[1] + 1
+        for i in range(2, len(bounds) - 1):
+            if bounds[i + 1] < bounds[i]:
+                bounds[i + 1] = bounds[i]
+    save_flags = [True] * n
+
+    r = client.post("/api/extract/save", json={
+        "word": "hello",
+        "boundaries_ms": bounds,
+        "save": save_flags,
+    })
+    assert r.status_code == 200
+    body = r.get_json()
+    skipped_symbols = [s["symbol"] for s in body["skipped"]]
+    skipped_reasons = [s["reason"] for s in body["skipped"]]
+    assert prop["phonemes"][1]["symbol"] in skipped_symbols
+    assert "too short" in skipped_reasons
+
+
+def test_extract_save_rejects_non_monotonic_boundaries(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    pr = client.post("/api/extract/propose", json={"word": "hello"})
+    prop = pr.get_json()
+    bounds = list(prop["boundaries_ms"])
+    if len(bounds) >= 3:
+        bounds[1], bounds[2] = bounds[2], bounds[1]
+
+    r = client.post("/api/extract/save", json={
+        "word": "hello",
+        "boundaries_ms": bounds,
+        "save": [True] * (len(bounds) - 1),
+    })
+    assert r.status_code == 400
+
+
+def test_extract_save_rejects_length_mismatch(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    pr = client.post("/api/extract/propose", json={"word": "hello"})
+    prop = pr.get_json()
+    r = client.post("/api/extract/save", json={
+        "word": "hello",
+        "boundaries_ms": prop["boundaries_ms"],
+        "save": [True],
+    })
+    assert r.status_code == 400
+
+
+def test_extract_save_overwrites_existing_phoneme(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    pr = client.post("/api/extract/propose", json={"word": "hello"})
+    prop = pr.get_json()
+    first_symbol = prop["phonemes"][0]["symbol"]
+    (tmp_path / "phonemes").mkdir(exist_ok=True)
+    target = tmp_path / "phonemes" / f"{first_symbol.lower()}.wav"
+    target.write_bytes(b"OLDOLDOLDOLD")
+
+    save_flags = [False] * len(prop["phonemes"])
+    save_flags[0] = True
+
+    r = client.post("/api/extract/save", json={
+        "word": "hello",
+        "boundaries_ms": prop["boundaries_ms"],
+        "save": save_flags,
+    })
+    assert r.status_code == 200
+    assert target.read_bytes() != b"OLDOLDOLDOLD"
+
+
+def test_extract_save_404_when_word_not_recorded(client):
+    r = client.post("/api/extract/save", json={
+        "word": "ghost",
+        "boundaries_ms": [0, 100, 200],
+        "save": [True, True],
+    })
+    assert r.status_code == 404
+
+
+def test_extract_save_normalises_word(client, tmp_path):
+    _seed_word(tmp_path, "hello")
+    pr = client.post("/api/extract/propose", json={"word": "hello"})
+    prop = pr.get_json()
+    r = client.post("/api/extract/save", json={
+        "word": "  HELLO!  ",
+        "boundaries_ms": prop["boundaries_ms"],
+        "save": [True] * len(prop["phonemes"]),
+    })
+    assert r.status_code == 200

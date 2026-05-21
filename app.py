@@ -195,6 +195,68 @@ def create_app() -> Flask:
             "boundaries_ms": boundaries_ms,
         }), 200
 
+    @flask_app.route("/api/extract/save", methods=["POST"])
+    def api_extract_save():
+        data = request.get_json(silent=True) or {}
+        word_raw = data.get("word", "")
+        word = inventory.normalise(word_raw)
+        if not word:
+            return jsonify({"error": "word is required"}), 400
+        if not inventory.has(word):
+            return jsonify({"error": "word not recorded", "word": word}), 404
+
+        boundaries_ms = data.get("boundaries_ms")
+        save_flags = data.get("save")
+        if not isinstance(boundaries_ms, list):
+            return jsonify({"error": "boundaries_ms is required"}), 400
+        if not isinstance(save_flags, list):
+            return jsonify({"error": "save is required"}), 400
+        if len(boundaries_ms) < 2:
+            return jsonify({"error": "boundaries_ms must have at least two entries"}), 400
+        if len(save_flags) != len(boundaries_ms) - 1:
+            return jsonify({"error": "save length must equal boundaries_ms length minus one"}), 400
+
+        for i in range(len(boundaries_ms) - 1):
+            if boundaries_ms[i + 1] < boundaries_ms[i]:
+                return jsonify({"error": "boundaries must be non-decreasing"}), 400
+
+        phs = phonemes.word_to_phonemes(word)
+        if phs is None:
+            return jsonify({"error": "word not in dictionary"}), 400
+        if len(phs) != len(save_flags):
+            return jsonify({"error": "phoneme count mismatch"}), 400
+
+        samples, _ = audio.read_wav(inventory.path(word))
+        audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
+        for b in boundaries_ms:
+            if not isinstance(b, (int, float)) or b < 0 or b > audio_duration_ms + 5:
+                return jsonify({"error": "boundary out of range"}), 400
+
+        min_slice_samples = int(audio.SAMPLE_RATE * 0.030)
+        saved: list[str] = []
+        skipped: list[dict] = []
+        for i, should_save in enumerate(save_flags):
+            if not should_save:
+                continue
+            symbol = phs[i]
+            slice_arr = audio.slice_samples(samples, int(boundaries_ms[i]), int(boundaries_ms[i + 1]))
+            if len(slice_arr) < min_slice_samples:
+                skipped.append({"symbol": symbol, "reason": "too short"})
+                continue
+            normalised = audio.peak_normalise(slice_arr)
+
+            out = io.BytesIO()
+            with wave.open(out, "wb") as w:
+                w.setnchannels(audio.CHANNELS)
+                w.setsampwidth(audio.SAMPLE_WIDTH)
+                w.setframerate(audio.SAMPLE_RATE)
+                w.writeframes(normalised.tobytes())
+            inventory.save_phoneme(symbol, out.getvalue())
+            saved.append(symbol)
+
+        log.info("extract/save: word=%r saved=%s skipped=%s", word, saved, skipped)
+        return jsonify({"saved": saved, "skipped": skipped}), 200
+
     @flask_app.route("/api/synthesize", methods=["POST"])
     def api_synthesize():
         data = request.get_json(silent=True) or {}
