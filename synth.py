@@ -1,6 +1,8 @@
 """Sentence synthesis: tokenise -> resolve -> concatenate."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import audio
 import inventory
 import phonemes
@@ -53,6 +55,54 @@ def tokenise_with_positions(sentence: str) -> list[tuple[str, str]]:
     return out
 
 
+@dataclass(frozen=True)
+class TokenCtx:
+    """A token plus the context synth and harvest both use to pick copies.
+
+    Context never crosses punctuation: prev/next are None across `, ; :`
+    and `. ! ?` (a pause separates the sounds), and at the text's ends.
+    """
+    token: str
+    position: str
+    prev_word: str | None
+    next_word: str | None
+    phonemes: list[str] | None      # CMUdict pronunciation, None if not in dict
+    prev_phoneme: str | None        # neighbour of the first phoneme (cross-word)
+    next_phoneme: str | None        # neighbour of the last phoneme (cross-word)
+
+
+def phrase_context(text: str) -> list[TokenCtx]:
+    toks = tokenise_with_positions(text)
+    prons = [phonemes.word_to_phonemes(t) for t, _ in toks]
+    out: list[TokenCtx] = []
+    for i, (tok, pos) in enumerate(toks):
+        joined_prev = i > 0 and toks[i - 1][1] == "mid"
+        joined_next = i < len(toks) - 1 and pos == "mid"
+        prev_pron = prons[i - 1] if joined_prev else None
+        next_pron = prons[i + 1] if joined_next else None
+        out.append(TokenCtx(
+            token=tok,
+            position=pos,
+            prev_word=toks[i - 1][0] if joined_prev else None,
+            next_word=toks[i + 1][0] if joined_next else None,
+            phonemes=prons[i],
+            prev_phoneme=prev_pron[-1] if prev_pron else None,
+            next_phoneme=next_pron[0] if next_pron else None,
+        ))
+    return out
+
+
+def phoneme_neighbours(tc: TokenCtx) -> list[tuple[str, str | None, str | None]]:
+    """(symbol, prev, next) for each phoneme of `tc`, crossing word edges."""
+    phs = tc.phonemes or []
+    return [
+        (ph,
+         phs[j - 1] if j > 0 else tc.prev_phoneme,
+         phs[j + 1] if j < len(phs) - 1 else tc.next_phoneme)
+        for j, ph in enumerate(phs)
+    ]
+
+
 def synthesise(
     sentence: str,
     phonemes_only: bool = False,
@@ -73,7 +123,7 @@ def synthesise(
     word copy used (None when built from phonemes) and each phoneme span is
     {"symbol", "start_ms", "end_ms", "unit_id"}.
     """
-    toks = tokenise_with_positions(sentence)
+    toks = phrase_context(sentence)
     if not toks:
         return None, [], []
 
@@ -84,16 +134,13 @@ def synthesise(
 
     groups: list[list[dict]] = []
     rendered_tokens: list[str] = []
-    word_unit_ids: list[str | None] = []
+    word_units: list[dict | None] = []
     group_phonemes: list[list[str] | None] = []  # None ⇒ single word copy
     skipped: list[str] = []
 
-    for i, (token, position) in enumerate(toks):
-        ctx = resolver.Context(
-            prev=toks[i - 1][0] if i > 0 else None,
-            next=toks[i + 1][0] if i < len(toks) - 1 else None,
-            position=position,
-        )
+    for tc in toks:
+        token = tc.token
+        ctx = resolver.Context(prev=tc.prev_word, next=tc.next_word, position=tc.position)
 
         direct = None
         for r in resolvers:
@@ -105,10 +152,10 @@ def synthesise(
             groups.append([direct])
             rendered_tokens.append(token)
             if direct["kind"] == "phoneme":
-                word_unit_ids.append(None)
+                word_units.append(None)
                 group_phonemes.append([direct["label"]])
             else:
-                word_unit_ids.append(direct["id"])
+                word_units.append(direct)
                 group_phonemes.append(None)
             continue
 
@@ -116,18 +163,14 @@ def synthesise(
             skipped.append(token)
             continue
 
-        phs = phonemes.word_to_phonemes(token)
+        phs = tc.phonemes
         if phs is None:
             skipped.append(token)
             continue
 
         picked: list[dict] = []
-        for j, ph in enumerate(phs):
-            unit = store.best_unit(
-                "phoneme", ph,
-                prev=phs[j - 1] if j > 0 else None,
-                next=phs[j + 1] if j < len(phs) - 1 else None,
-            )
+        for ph, prev_ph, next_ph in phoneme_neighbours(tc):
+            unit = store.best_unit("phoneme", ph, prev=prev_ph, next=next_ph)
             if unit is None:
                 break
             picked.append(unit)
@@ -137,14 +180,14 @@ def synthesise(
             continue
         groups.append(picked)
         rendered_tokens.append(token)
-        word_unit_ids.append(None)
+        word_units.append(None)
         group_phonemes.append(list(phs))
 
     if not groups:
         return None, skipped, []
 
     path_groups = [[store.unit_path(u["id"]) for u in g] for g in groups]
-    units = _compute_units(path_groups, groups, rendered_tokens, word_unit_ids, group_phonemes)
+    units = _compute_units(path_groups, groups, rendered_tokens, word_units, group_phonemes)
     wav_bytes = audio.concatenate(path_groups)
     return wav_bytes, skipped, units
 
@@ -153,7 +196,7 @@ def _compute_units(
     path_groups: list[list],
     unit_groups: list[list[dict]],
     rendered_tokens: list[str],
-    word_unit_ids: list[str | None],
+    word_units: list[dict | None],
     group_phonemes: list[list[str] | None],
 ) -> list[dict]:
     """Assign each rendered token (and each phoneme inside it) a
@@ -183,7 +226,10 @@ def _compute_units(
             "token": rendered_tokens[i],
             "start_ms": int(round(unit_start)),
             "end_ms": int(round(cumulative)),
-            "unit_id": word_unit_ids[i],
+            "unit_id": word_units[i]["id"] if word_units[i] else None,
+            "source": word_units[i]["source"] if word_units[i] else None,
+            "source_recording_id": word_units[i]["source_recording_id"] if word_units[i] else None,
+            "source_sentence_idx": word_units[i]["source_sentence_idx"] if word_units[i] else None,
             "phonemes": spans,
         })
         if i < n - 1:
