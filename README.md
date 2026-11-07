@@ -41,14 +41,12 @@ Requires [uv](https://docs.astral.sh/uv/) and a modern desktop browser (Chrome
 or Firefox) that supports the Web Audio API and AudioWorklet.
 
 ```powershell
-uv sync --group dev
+uv sync
 uv run flask --app app run
 ```
 
 Open `http://127.0.0.1:5000`. Record a few words, then type a sentence to
 synthesise it.
-
-Run tests with `uv run pytest`.
 
 ## Phoneme fallback
 
@@ -78,12 +76,10 @@ The ✎ icon on each word chip re-opens the editor later.
 
 ## todo
 
-- allow multiple copies of words
 - use https://github.com/tinygrad/tinygrad
 - vendor tinygrad inside this repo
 - use tinygrad webgpu
 - synthesize phonemes
 - text -> wav -> ai to tidy wav up -> new wav
 - text -> ai -> wav
-- do we really need all these tests?
 

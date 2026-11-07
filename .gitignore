@@ -225,3 +225,4 @@ data/books/
 
 # Brainstorm companion
 .superpowers/
+.playwright-mcp/
