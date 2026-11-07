@@ -30,6 +30,18 @@ def write_wav(path: Path, samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -
         w.writeframes(samples.tobytes())
 
 
+def encode_wav(samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
+    """Encode int16 samples as WAV bytes in the inventory format."""
+    import io as _io
+    buf = _io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(CHANNELS)
+        w.setsampwidth(SAMPLE_WIDTH)
+        w.setframerate(sample_rate)
+        w.writeframes(np.asarray(samples, dtype=np.int16).tobytes())
+    return buf.getvalue()
+
+
 def read_wav(source) -> tuple[np.ndarray, int]:
     """Read a WAV file. `source` may be a path or a binary file-like object."""
     if hasattr(source, "read"):

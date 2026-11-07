@@ -7,7 +7,7 @@ import logging
 import wave
 
 import numpy as np
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 import audio
 import books
@@ -15,9 +15,110 @@ import extraction
 import inventory
 import phonemes
 import spectrogram
+import store
 import synth
 
 log = logging.getLogger("talky")
+
+PHONEME_MIN_SLICE_SECONDS = 0.030
+
+
+def _read_upload_wav(file, route: str):
+    """Validate an uploaded WAV. Returns (samples, None) or (None, error response)."""
+    if file is None:
+        return None, (jsonify({"error": "missing audio field"}), 400)
+    try:
+        with wave.open(io.BytesIO(file.read()), "rb") as r:
+            rate, channels, sampwidth = r.getframerate(), r.getnchannels(), r.getsampwidth()
+            frames = r.readframes(r.getnframes())
+    except (wave.Error, EOFError) as e:
+        log.warning("%s: invalid WAV: %s", route, e)
+        return None, (jsonify({"error": "invalid WAV file"}), 400)
+    if rate != audio.SAMPLE_RATE or channels != audio.CHANNELS or sampwidth != audio.SAMPLE_WIDTH:
+        log.warning("%s: format mismatch rate=%s channels=%s sampwidth=%s",
+                    route, rate, channels, sampwidth)
+        return None, (jsonify({"error": "expected 16-bit mono PCM at 22050 Hz"}), 400)
+    return np.frombuffer(frames, dtype=np.int16), None
+
+
+def _trimmed_take(samples: np.ndarray, route: str):
+    """Silence-trim + peak-normalise a fresh recording. Returns (wav_bytes, err)."""
+    samples = audio.trim_silence(samples)
+    if len(samples) < int(audio.SAMPLE_RATE * audio.MIN_LENGTH_SECONDS):
+        log.warning("%s: too short after trim: %s samples", route, len(samples))
+        return None, (jsonify({"error": "recording too short"}), 400)
+    return audio.encode_wav(audio.peak_normalise(samples)), None
+
+
+def _duration_ms(samples: np.ndarray) -> int:
+    return int(len(samples) * 1000 / audio.SAMPLE_RATE)
+
+
+def _spectrogram_payload(samples: np.ndarray) -> dict:
+    spec = spectrogram.compute(samples)
+    return {
+        "data": base64.b64encode(spec["data"]).decode("ascii"),
+        "n_frames": spec["n_frames"],
+        "n_freqs": spec["n_freqs"],
+        "hop_ms": spec["hop_ms"],
+        "duration_ms": spec["duration_ms"],
+    }
+
+
+def _word_unit(data: dict):
+    """Resolve the word copy a request targets: `unit_id` if given, else the
+    most recent copy of `word`. Returns (unit, None) or (None, error)."""
+    unit_id = data.get("unit_id")
+    if unit_id is not None:
+        unit = store.get_unit(unit_id)
+        if unit is None or unit["kind"] != "word":
+            return None, (jsonify({"error": "unit not found", "unit_id": unit_id}), 404)
+        return unit, None
+    word = inventory.normalise(str(data.get("word", "")))
+    if not word:
+        return None, (jsonify({"error": "word is required"}), 400)
+    units = store.list_units("word", word)
+    if not units:
+        return None, (jsonify({"error": "word not recorded", "word": word}), 404)
+    return units[-1], None
+
+
+def _phoneme_unit(symbol: str, unit_id):
+    """Resolve the phoneme copy a request targets (most recent by default)."""
+    if unit_id is not None:
+        unit = store.get_unit(unit_id)
+        if unit is None or unit["kind"] != "phoneme" or unit["label"] != symbol:
+            return None, (jsonify({"error": "unit not found", "symbol": symbol,
+                                   "unit_id": unit_id}), 404)
+        return unit, None
+    units = store.list_units("phoneme", symbol)
+    if not units:
+        return None, (jsonify({"error": "phoneme not recorded", "symbol": symbol}), 404)
+    return units[-1], None
+
+
+def _symbol_from(data: dict):
+    symbol = str(data.get("symbol", "")).strip().upper()
+    if not symbol:
+        return None, (jsonify({"error": "symbol is required"}), 400)
+    if symbol not in phonemes.PHONEMES_SET:
+        return None, (jsonify({"error": "unknown phoneme", "symbol": symbol}), 400)
+    return symbol, None
+
+
+def _trim_range(data: dict, samples: np.ndarray, min_seconds: float):
+    """Validate start/end and return (normalised_slice, None) or (None, error)."""
+    start_ms, end_ms = data.get("start_ms"), data.get("end_ms")
+    if not isinstance(start_ms, (int, float)) or not isinstance(end_ms, (int, float)):
+        return None, (jsonify({"error": "start_ms and end_ms are required"}), 400)
+    if end_ms <= start_ms:
+        return None, (jsonify({"error": "end_ms must be greater than start_ms"}), 400)
+    if start_ms < 0 or end_ms > _duration_ms(samples) + 5:
+        return None, (jsonify({"error": "trim out of range"}), 400)
+    slice_arr = audio.slice_samples(samples, int(start_ms), int(end_ms))
+    if len(slice_arr) < int(audio.SAMPLE_RATE * min_seconds):
+        return None, (jsonify({"error": "trim too short"}), 400)
+    return audio.peak_normalise(slice_arr), None
 
 
 def create_app() -> Flask:
@@ -30,7 +131,7 @@ def create_app() -> Flask:
 
     @flask_app.route("/api/inventory")
     def api_inventory():
-        return jsonify({"words": inventory.list_words()})
+        return jsonify({"words": store.list_labels("word")})
 
     @flask_app.route("/api/record", methods=["POST"])
     def api_record():
@@ -39,180 +140,114 @@ def create_app() -> Flask:
         if not word:
             log.warning("record: empty word after normalisation: %r", word_raw)
             return jsonify({"error": "word is empty after normalisation"}), 400
-
-        audio_file = request.files.get("audio")
-        if audio_file is None:
-            return jsonify({"error": "missing audio field"}), 400
-
-        raw = audio_file.read()
-        try:
-            with wave.open(io.BytesIO(raw), "rb") as r:
-                rate = r.getframerate()
-                channels = r.getnchannels()
-                sampwidth = r.getsampwidth()
-                n_frames = r.getnframes()
-                frames = r.readframes(n_frames)
-        except wave.Error as e:
-            log.warning("record: invalid WAV: %s", e)
-            return jsonify({"error": "invalid WAV file"}), 400
-
-        if rate != audio.SAMPLE_RATE or channels != audio.CHANNELS or sampwidth != audio.SAMPLE_WIDTH:
-            log.warning(
-                "record: format mismatch rate=%s channels=%s sampwidth=%s",
-                rate, channels, sampwidth,
-            )
-            return jsonify({"error": "expected 16-bit mono PCM at 22050 Hz"}), 400
-
-        samples = np.frombuffer(frames, dtype=np.int16)
-        samples = audio.trim_silence(samples)
-        if len(samples) < int(audio.SAMPLE_RATE * audio.MIN_LENGTH_SECONDS):
-            log.warning("record: too short after trim: %s samples", len(samples))
-            return jsonify({"error": "recording too short"}), 400
-
-        samples = audio.peak_normalise(samples)
-
-        overwrite = request.args.get("overwrite") == "true"
-        if inventory.has(word) and not overwrite:
-            return jsonify({"error": "word exists", "existing": word}), 409
-
-        out = io.BytesIO()
-        with wave.open(out, "wb") as w:
-            w.setnchannels(audio.CHANNELS)
-            w.setsampwidth(audio.SAMPLE_WIDTH)
-            w.setframerate(audio.SAMPLE_RATE)
-            w.writeframes(samples.tobytes())
-        inventory.save(word, out.getvalue())
-
-        log.info("record: saved %r (%d samples)", word, len(samples))
-        return jsonify({"word": word}), 200
+        samples, err = _read_upload_wav(request.files.get("audio"), "record")
+        if err:
+            return err
+        wav_bytes, err = _trimmed_take(samples, "record")
+        if err:
+            return err
+        unit_id = store.add_unit("word", word, wav_bytes, source="isolated")
+        log.info("record: saved %r unit=%s", word, unit_id)
+        return jsonify({"word": word, "unit_id": unit_id}), 200
 
     @flask_app.route("/api/record/phoneme", methods=["POST"])
     def api_record_phoneme():
-        phoneme_raw = request.form.get("phoneme", "").strip()
-        if not phoneme_raw:
+        phoneme = request.form.get("phoneme", "").strip().upper()
+        if not phoneme:
             return jsonify({"error": "phoneme is required"}), 400
-        phoneme = phoneme_raw.upper()
         if phoneme not in phonemes.PHONEMES_SET:
-            return jsonify({
-                "error": "unknown phoneme",
-                "allowed": list(phonemes.PHONEMES),
-            }), 400
-
-        audio_file = request.files.get("audio")
-        if audio_file is None:
-            return jsonify({"error": "missing audio field"}), 400
-
-        raw = audio_file.read()
-        try:
-            with wave.open(io.BytesIO(raw), "rb") as r:
-                rate = r.getframerate()
-                channels = r.getnchannels()
-                sampwidth = r.getsampwidth()
-                n_frames = r.getnframes()
-                frames = r.readframes(n_frames)
-        except wave.Error as e:
-            log.warning("record/phoneme: invalid WAV: %s", e)
-            return jsonify({"error": "invalid WAV file"}), 400
-
-        if rate != audio.SAMPLE_RATE or channels != audio.CHANNELS or sampwidth != audio.SAMPLE_WIDTH:
-            log.warning(
-                "record/phoneme: format mismatch rate=%s channels=%s sampwidth=%s",
-                rate, channels, sampwidth,
-            )
-            return jsonify({"error": "expected 16-bit mono PCM at 22050 Hz"}), 400
-
-        samples = np.frombuffer(frames, dtype=np.int16)
-        samples = audio.trim_silence(samples)
-        if len(samples) < int(audio.SAMPLE_RATE * audio.MIN_LENGTH_SECONDS):
-            log.warning("record/phoneme: too short after trim: %s samples", len(samples))
-            return jsonify({"error": "recording too short"}), 400
-
-        samples = audio.peak_normalise(samples)
-
-        out = io.BytesIO()
-        with wave.open(out, "wb") as w:
-            w.setnchannels(audio.CHANNELS)
-            w.setsampwidth(audio.SAMPLE_WIDTH)
-            w.setframerate(audio.SAMPLE_RATE)
-            w.writeframes(samples.tobytes())
-        variant_id = inventory.save_variant(
-            phoneme, out.getvalue(),
-            source="isolated", prev=None, next=None,
-        )
-
-        log.info("record/phoneme: saved %r variant=%s (%d samples)",
-                 phoneme, variant_id, len(samples))
-        return jsonify({"phoneme": phoneme, "variant_id": variant_id}), 200
+            return jsonify({"error": "unknown phoneme", "allowed": list(phonemes.PHONEMES)}), 400
+        samples, err = _read_upload_wav(request.files.get("audio"), "record/phoneme")
+        if err:
+            return err
+        wav_bytes, err = _trimmed_take(samples, "record/phoneme")
+        if err:
+            return err
+        unit_id = store.add_unit("phoneme", phoneme, wav_bytes, source="isolated")
+        log.info("record/phoneme: saved %r unit=%s", phoneme, unit_id)
+        return jsonify({"phoneme": phoneme, "unit_id": unit_id}), 200
 
     @flask_app.route("/api/phoneme-inventory")
     def api_phoneme_inventory():
-        recorded = set(inventory.list_recorded_phonemes())
+        recorded = set(store.list_labels("phoneme"))
         return jsonify({
             "phonemes": [
-                {
-                    "symbol": s,
-                    "example": phonemes.PHONEME_EXAMPLES[s],
-                    "recorded": s in recorded,
-                }
+                {"symbol": s, "example": phonemes.PHONEME_EXAMPLES[s], "recorded": s in recorded}
                 for s in phonemes.PHONEMES
             ]
         })
 
+    # --- unit copies ------------------------------------------------------------
+
+    @flask_app.route("/api/units", methods=["GET"])
+    def api_units():
+        kind = request.args.get("kind", "")
+        if kind not in store.KINDS:
+            return jsonify({"error": "kind must be 'word' or 'phoneme'"}), 400
+        label = store.canonical_label(kind, request.args.get("label", ""))
+        if not label:
+            return jsonify({"error": "label is required"}), 400
+        if kind == "phoneme" and label not in phonemes.PHONEMES_SET:
+            return jsonify({"error": "unknown phoneme", "symbol": label}), 400
+        return jsonify({"kind": kind, "label": label, "units": store.list_units(kind, label)}), 200
+
+    @flask_app.route("/api/units/<unit_id>/audio", methods=["GET"])
+    def api_unit_audio(unit_id):
+        if store.get_unit(unit_id) is None:
+            return jsonify({"error": "unit not found"}), 404
+        return send_file(store.unit_path(unit_id), mimetype="audio/wav")
+
+    @flask_app.route("/api/units/<unit_id>", methods=["DELETE"])
+    def api_unit_delete(unit_id):
+        if not store.delete_unit(unit_id):
+            return jsonify({"error": "unit not found", "unit_id": unit_id}), 404
+        log.info("units: deleted %s", unit_id)
+        return ("", 204)
+
+    # --- word editor ------------------------------------------------------------
+
     @flask_app.route("/api/extract/propose", methods=["POST"])
     def api_extract_propose():
-        data = request.get_json(silent=True) or {}
-        word_raw = data.get("word", "")
-        word = inventory.normalise(word_raw)
-        if not word:
-            return jsonify({"error": "word is required"}), 400
-        if not inventory.has(word):
-            return jsonify({"error": "word not recorded", "word": word}), 404
-
+        unit, err = _word_unit(request.get_json(silent=True) or {})
+        if err:
+            return err
+        word = unit["label"]
         phs = phonemes.word_to_phonemes(word)
         if phs is None:
             return jsonify({"error": "word not in dictionary", "word": word}), 400
 
-        samples, _ = audio.read_wav(inventory.path(word))
-        audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
+        path = store.unit_path(unit["id"])
+        samples, _ = audio.read_wav(path)
         boundaries_ms = extraction.propose_boundaries(samples, phs)
-        spans = [
-            {"start_ms": int(boundaries_ms[i]), "end_ms": int(boundaries_ms[i + 1])}
-            for i in range(len(phs))
-        ]
-        wav_bytes = inventory.path(word).read_bytes()
-        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
-
-        phoneme_payload = [
-            {
-                "symbol": p,
-                "example": phonemes.PHONEME_EXAMPLES.get(p, ""),
-                "recorded": inventory.has_phoneme(p),
-                "prior_ms": extraction.PHONEME_DURATION_MS.get(
-                    p.upper(), extraction.DEFAULT_DURATION_MS,
-                ),
-            }
-            for p in phs
-        ]
-
-        log.info("extract/propose: word=%r phonemes=%d duration=%dms",
-                 word, len(phs), audio_duration_ms)
+        recorded = set(store.list_labels("phoneme"))
         return jsonify({
             "word": word,
-            "audio_duration_ms": audio_duration_ms,
-            "audio": audio_b64,
-            "phonemes": phoneme_payload,
-            "spans": spans,
+            "unit_id": unit["id"],
+            "audio_duration_ms": _duration_ms(samples),
+            "audio": base64.b64encode(path.read_bytes()).decode("ascii"),
+            "phonemes": [
+                {
+                    "symbol": p,
+                    "example": phonemes.PHONEME_EXAMPLES.get(p, ""),
+                    "recorded": p in recorded,
+                    "prior_ms": extraction.PHONEME_DURATION_MS.get(
+                        p.upper(), extraction.DEFAULT_DURATION_MS),
+                }
+                for p in phs
+            ],
+            "spans": [
+                {"start_ms": int(boundaries_ms[i]), "end_ms": int(boundaries_ms[i + 1])}
+                for i in range(len(phs))
+            ],
         }), 200
 
     @flask_app.route("/api/extract/save", methods=["POST"])
     def api_extract_save():
         data = request.get_json(silent=True) or {}
-        word_raw = data.get("word", "")
-        word = inventory.normalise(word_raw)
-        if not word:
-            return jsonify({"error": "word is required"}), 400
-        if not inventory.has(word):
-            return jsonify({"error": "word not recorded", "word": word}), 404
+        unit, err = _word_unit(data)
+        if err:
+            return err
+        word = unit["label"]
 
         spans = data.get("spans")
         save_flags = data.get("save")
@@ -222,7 +257,6 @@ def create_app() -> Flask:
             return jsonify({"error": "save is required"}), 400
         if len(save_flags) != len(spans):
             return jsonify({"error": "save length must equal spans length"}), 400
-
         for s in spans:
             if (not isinstance(s, dict)
                     or not isinstance(s.get("start_ms"), (int, float))
@@ -230,7 +264,6 @@ def create_app() -> Flask:
                 return jsonify({"error": "each span must have start_ms and end_ms"}), 400
             if s["end_ms"] <= s["start_ms"]:
                 return jsonify({"error": "span end_ms must be greater than start_ms"}), 400
-
         for prev, curr in zip(spans, spans[1:]):
             if curr["start_ms"] < prev["end_ms"]:
                 return jsonify({"error": "spans must not overlap"}), 400
@@ -241,13 +274,13 @@ def create_app() -> Flask:
         if len(phs) != len(save_flags):
             return jsonify({"error": "phoneme count mismatch"}), 400
 
-        samples, _ = audio.read_wav(inventory.path(word))
-        audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
+        samples, _ = audio.read_wav(store.unit_path(unit["id"]))
+        duration_ms = _duration_ms(samples)
         for s in spans:
-            if s["start_ms"] < 0 or s["end_ms"] > audio_duration_ms + 5:
+            if s["start_ms"] < 0 or s["end_ms"] > duration_ms + 5:
                 return jsonify({"error": "span out of range"}), 400
 
-        min_slice_samples = int(audio.SAMPLE_RATE * 0.030)
+        min_slice = int(audio.SAMPLE_RATE * PHONEME_MIN_SLICE_SECONDS)
         saved: list[dict] = []
         skipped: list[dict] = []
         for i, should_save in enumerate(save_flags):
@@ -255,229 +288,93 @@ def create_app() -> Flask:
                 continue
             symbol = phs[i]
             slice_arr = audio.slice_samples(samples, int(spans[i]["start_ms"]), int(spans[i]["end_ms"]))
-            if len(slice_arr) < min_slice_samples:
+            if len(slice_arr) < min_slice:
                 skipped.append({"symbol": symbol, "reason": "too short"})
                 continue
-            normalised = audio.peak_normalise(slice_arr)
-
-            out = io.BytesIO()
-            with wave.open(out, "wb") as w:
-                w.setnchannels(audio.CHANNELS)
-                w.setsampwidth(audio.SAMPLE_WIDTH)
-                w.setframerate(audio.SAMPLE_RATE)
-                w.writeframes(normalised.tobytes())
-            prev_ph = phs[i - 1] if i > 0 else None
-            next_ph = phs[i + 1] if i < len(phs) - 1 else None
-            variant_id = inventory.save_variant(
-                symbol, out.getvalue(),
-                source=word, prev=prev_ph, next=next_ph,
+            unit_id = store.add_unit(
+                "phoneme", symbol, audio.encode_wav(audio.peak_normalise(slice_arr)),
+                source="word", source_unit_id=unit["id"], source_word=word,
+                prev=phs[i - 1] if i > 0 else None,
+                next=phs[i + 1] if i < len(phs) - 1 else None,
             )
-            saved.append({"symbol": symbol, "variant_id": variant_id})
+            saved.append({"symbol": symbol, "unit_id": unit_id})
 
-        log.info("extract/save: word=%r saved=%s skipped=%s", word, saved, skipped)
+        log.info("extract/save: word=%r unit=%s saved=%s skipped=%s",
+                 word, unit["id"], saved, skipped)
         return jsonify({"saved": saved, "skipped": skipped}), 200
 
     @flask_app.route("/api/extract/trim", methods=["POST"])
     def api_extract_trim():
         data = request.get_json(silent=True) or {}
-        word_raw = data.get("word", "")
-        word = inventory.normalise(word_raw)
-        if not word:
-            return jsonify({"error": "word is required"}), 400
-        if not inventory.has(word):
-            return jsonify({"error": "word not recorded", "word": word}), 404
+        unit, err = _word_unit(data)
+        if err:
+            return err
+        samples, _ = audio.read_wav(store.unit_path(unit["id"]))
+        trimmed, err = _trim_range(data, samples, audio.MIN_LENGTH_SECONDS)
+        if err:
+            return err
+        duration_ms = store.replace_unit_audio(unit["id"], audio.encode_wav(trimmed))
+        log.info("extract/trim: word=%r unit=%s -> %dms", unit["label"], unit["id"], duration_ms)
+        return jsonify({"word": unit["label"], "unit_id": unit["id"],
+                        "duration_ms": duration_ms}), 200
 
-        start_ms = data.get("start_ms")
-        end_ms = data.get("end_ms")
-        if not isinstance(start_ms, (int, float)) or not isinstance(end_ms, (int, float)):
-            return jsonify({"error": "start_ms and end_ms are required"}), 400
-        if end_ms <= start_ms:
-            return jsonify({"error": "end_ms must be greater than start_ms"}), 400
-
-        samples, _ = audio.read_wav(inventory.path(word))
-        duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
-        if start_ms < 0 or end_ms > duration_ms + 5:
-            return jsonify({"error": "trim out of range"}), 400
-
-        slice_arr = audio.slice_samples(samples, int(start_ms), int(end_ms))
-        if len(slice_arr) < int(audio.SAMPLE_RATE * audio.MIN_LENGTH_SECONDS):
-            return jsonify({"error": "trim too short"}), 400
-
-        normalised = audio.peak_normalise(slice_arr)
-        out = io.BytesIO()
-        with wave.open(out, "wb") as w:
-            w.setnchannels(audio.CHANNELS)
-            w.setsampwidth(audio.SAMPLE_WIDTH)
-            w.setframerate(audio.SAMPLE_RATE)
-            w.writeframes(normalised.tobytes())
-        inventory.save(word, out.getvalue())
-
-        new_duration_ms = int(len(normalised) * 1000 / audio.SAMPLE_RATE)
-        log.info("extract/trim: word=%r %d-%dms -> %dms",
-                 word, int(start_ms), int(end_ms), new_duration_ms)
-        return jsonify({"word": word, "duration_ms": new_duration_ms}), 200
-
-    def _resolve_variant(symbol, variant_id):
-        """Pick the variant WAV path for a phoneme + optional variant ID.
-        Returns (path, variant_id) on success, or (None, error_response).
-        """
-        variants = inventory.list_variants(symbol)
-        if not variants:
-            return None, (jsonify({"error": "phoneme not recorded", "symbol": symbol}), 404)
-        if variant_id is None:
-            chosen = variants[-1]   # most recent
-        else:
-            match = next((v for v in variants if v["id"] == variant_id), None)
-            if match is None:
-                return None, (jsonify({"error": "variant not found",
-                                       "symbol": symbol, "id": variant_id}), 404)
-            chosen = match
-        path = inventory.variant_path(symbol, chosen["id"])
-        if not path.exists():
-            return None, (jsonify({"error": "variant not found",
-                                   "symbol": symbol, "id": chosen["id"]}), 404)
-        return (path, chosen["id"]), None
+    # --- phoneme editor -----------------------------------------------------------
 
     @flask_app.route("/api/phoneme/propose", methods=["POST"])
     def api_phoneme_propose():
         data = request.get_json(silent=True) or {}
-        symbol = str(data.get("symbol", "")).strip().upper()
-        if not symbol:
-            return jsonify({"error": "symbol is required"}), 400
-        if symbol not in phonemes.PHONEMES_SET:
-            return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
-
-        variant_id = data.get("variant_id")
-        resolved, err = _resolve_variant(symbol, variant_id)
-        if err is not None:
+        symbol, err = _symbol_from(data)
+        if err:
             return err
-        wav_path, resolved_id = resolved
-
-        samples, _ = audio.read_wav(wav_path)
-        audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
-        audio_b64 = base64.b64encode(wav_path.read_bytes()).decode("ascii")
-
+        unit, err = _phoneme_unit(symbol, data.get("unit_id"))
+        if err:
+            return err
+        path = store.unit_path(unit["id"])
+        samples, _ = audio.read_wav(path)
         return jsonify({
             "symbol": symbol,
-            "variant_id": resolved_id,
+            "unit_id": unit["id"],
             "example": phonemes.PHONEME_EXAMPLES.get(symbol, ""),
-            "audio_duration_ms": audio_duration_ms,
-            "audio": audio_b64,
+            "audio_duration_ms": _duration_ms(samples),
+            "audio": base64.b64encode(path.read_bytes()).decode("ascii"),
         }), 200
 
     @flask_app.route("/api/phoneme/trim", methods=["POST"])
     def api_phoneme_trim():
         data = request.get_json(silent=True) or {}
-        symbol = str(data.get("symbol", "")).strip().upper()
-        if not symbol:
-            return jsonify({"error": "symbol is required"}), 400
-        if symbol not in phonemes.PHONEMES_SET:
-            return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
-
-        variant_id = data.get("variant_id")
-        resolved, err = _resolve_variant(symbol, variant_id)
-        if err is not None:
+        symbol, err = _symbol_from(data)
+        if err:
             return err
-        wav_path, resolved_id = resolved
+        unit, err = _phoneme_unit(symbol, data.get("unit_id"))
+        if err:
+            return err
+        samples, _ = audio.read_wav(store.unit_path(unit["id"]))
+        # Phonemes are short — allow trims down to the extraction slice floor.
+        trimmed, err = _trim_range(data, samples, PHONEME_MIN_SLICE_SECONDS)
+        if err:
+            return err
+        duration_ms = store.replace_unit_audio(unit["id"], audio.encode_wav(trimmed))
+        log.info("phoneme/trim: symbol=%r unit=%s -> %dms", symbol, unit["id"], duration_ms)
+        return jsonify({"symbol": symbol, "unit_id": unit["id"], "duration_ms": duration_ms}), 200
 
-        start_ms = data.get("start_ms")
-        end_ms = data.get("end_ms")
-        if not isinstance(start_ms, (int, float)) or not isinstance(end_ms, (int, float)):
-            return jsonify({"error": "start_ms and end_ms are required"}), 400
-        if end_ms <= start_ms:
-            return jsonify({"error": "end_ms must be greater than start_ms"}), 400
-
-        samples, _ = audio.read_wav(wav_path)
-        duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
-        if start_ms < 0 or end_ms > duration_ms + 5:
-            return jsonify({"error": "trim out of range"}), 400
-
-        slice_arr = audio.slice_samples(samples, int(start_ms), int(end_ms))
-        # Phonemes are short — allow trims down to 30 ms, matching the
-        # phoneme-slice floor enforced in /api/extract/save.
-        if len(slice_arr) < int(audio.SAMPLE_RATE * 0.030):
-            return jsonify({"error": "trim too short"}), 400
-
-        normalised = audio.peak_normalise(slice_arr)
-        out = io.BytesIO()
-        with wave.open(out, "wb") as w:
-            w.setnchannels(audio.CHANNELS)
-            w.setsampwidth(audio.SAMPLE_WIDTH)
-            w.setframerate(audio.SAMPLE_RATE)
-            w.writeframes(normalised.tobytes())
-        # Trim overwrites the targeted variant's WAV in place and refreshes
-        # its sidecar's duration_ms — no new variant is created.
-        wav_path.write_bytes(out.getvalue())
-        sidecar = wav_path.with_suffix(".json")
-        try:
-            import json as _json
-            meta = _json.loads(sidecar.read_text(encoding="utf-8"))
-            meta["duration_ms"] = int(len(normalised) * 1000 / audio.SAMPLE_RATE)
-            sidecar.write_text(_json.dumps(meta), encoding="utf-8")
-        except (OSError, ValueError):
-            pass
-
-        new_duration_ms = int(len(normalised) * 1000 / audio.SAMPLE_RATE)
-        log.info("phoneme/trim: symbol=%r variant=%s %d-%dms -> %dms",
-                 symbol, resolved_id, int(start_ms), int(end_ms), new_duration_ms)
-        return jsonify({"symbol": symbol, "variant_id": resolved_id,
-                        "duration_ms": new_duration_ms}), 200
-
-    @flask_app.route("/api/phoneme/variants", methods=["GET"])
-    def api_phoneme_variants():
-        symbol = str(request.args.get("symbol", "")).strip().upper()
-        if not symbol:
-            return jsonify({"error": "symbol is required"}), 400
-        if symbol not in phonemes.PHONEMES_SET:
-            return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
-        variants = inventory.list_variants(symbol)
-        return jsonify({"symbol": symbol, "variants": variants}), 200
-
-    @flask_app.route("/api/phoneme/variants", methods=["DELETE"])
-    def api_phoneme_variants_delete():
-        symbol = str(request.args.get("symbol", "")).strip().upper()
-        variant_id = request.args.get("id", "")
-        if not symbol:
-            return jsonify({"error": "symbol is required"}), 400
-        if symbol not in phonemes.PHONEMES_SET:
-            return jsonify({"error": "unknown phoneme", "symbol": symbol}), 400
-        if not variant_id:
-            return jsonify({"error": "id is required"}), 400
-        if not inventory.delete_variant(symbol, variant_id):
-            return jsonify({"error": "variant not found",
-                            "symbol": symbol, "id": variant_id}), 404
-        return ("", 204)
+    # --- reference sentences -------------------------------------------------------
 
     @flask_app.route("/api/sentence/record", methods=["POST"])
     def api_sentence_record():
         sentence = request.form.get("sentence", "").strip()
         if not sentence:
             return jsonify({"error": "sentence is required"}), 400
-
-        audio_file = request.files.get("audio")
-        if audio_file is None:
-            return jsonify({"error": "missing audio field"}), 400
-
-        raw = audio_file.read()
-        try:
-            with wave.open(io.BytesIO(raw), "rb") as r:
-                rate = r.getframerate()
-                channels = r.getnchannels()
-                sampwidth = r.getsampwidth()
-        except wave.Error as e:
-            log.warning("sentence/record: invalid WAV: %s", e)
-            return jsonify({"error": "invalid WAV file"}), 400
-
-        if rate != audio.SAMPLE_RATE or channels != audio.CHANNELS or sampwidth != audio.SAMPLE_WIDTH:
-            return jsonify({"error": "expected 16-bit mono PCM at 22050 Hz"}), 400
-
-        sid = inventory.save_sentence(sentence, raw)
+        samples, err = _read_upload_wav(request.files.get("audio"), "sentence/record")
+        if err:
+            return err
+        # Saved untrimmed and un-normalised: references are raw training data.
+        sid = store.save_sentence(sentence, audio.encode_wav(samples))
         log.info("sentence/record: saved id=%s text=%r", sid, sentence)
         return jsonify({"id": sid}), 200
 
     @flask_app.route("/api/sentences")
     def api_sentences():
-        return jsonify({"sentences": inventory.list_sentences()})
+        return jsonify({"sentences": store.list_sentences()})
 
     @flask_app.route("/api/sentence/audio", methods=["POST"])
     def api_sentence_audio():
@@ -485,28 +382,19 @@ def create_app() -> Flask:
         sentence = data.get("sentence")
         if not isinstance(sentence, str) or not sentence.strip():
             return jsonify({"error": "sentence is required"}), 400
-
-        wav_path = inventory.find_sentence_by_text(sentence)
+        wav_path = store.find_sentence_by_text(sentence)
         if wav_path is None:
             return jsonify({"found": False}), 200
-
         samples, _ = audio.read_wav(wav_path)
-        audio_duration_ms = int(len(samples) * 1000 / audio.SAMPLE_RATE)
-        wav_bytes = wav_path.read_bytes()
-        spec = spectrogram.compute(samples)
         return jsonify({
             "found": True,
             "id": wav_path.stem,
-            "audio": base64.b64encode(wav_bytes).decode("ascii"),
-            "audio_duration_ms": audio_duration_ms,
-            "spectrogram": {
-                "data": base64.b64encode(spec["data"]).decode("ascii"),
-                "n_frames": spec["n_frames"],
-                "n_freqs": spec["n_freqs"],
-                "hop_ms": spec["hop_ms"],
-                "duration_ms": spec["duration_ms"],
-            },
+            "audio": base64.b64encode(wav_path.read_bytes()).decode("ascii"),
+            "audio_duration_ms": _duration_ms(samples),
+            "spectrogram": _spectrogram_payload(samples),
         }), 200
+
+    # --- books & synthesis -----------------------------------------------------------
 
     @flask_app.route("/api/books")
     def api_books():
@@ -532,24 +420,15 @@ def create_app() -> Flask:
         phonemes_only = bool(data.get("phonemes_only", False))
 
         wav_bytes, skipped, units = synth.synthesise(sentence, phonemes_only=phonemes_only)
-        encoded = base64.b64encode(wav_bytes).decode("ascii") if wav_bytes else None
-
         spec_payload = None
         if wav_bytes is not None:
             samples, _ = audio.read_wav(io.BytesIO(wav_bytes))
-            spec = spectrogram.compute(samples)
-            spec_payload = {
-                "data": base64.b64encode(spec["data"]).decode("ascii"),
-                "n_frames": spec["n_frames"],
-                "n_freqs": spec["n_freqs"],
-                "hop_ms": spec["hop_ms"],
-                "duration_ms": spec["duration_ms"],
-            }
+            spec_payload = _spectrogram_payload(samples)
 
         log.info("synthesize: %r phonemes_only=%s resolved=%s skipped=%s",
                  sentence, phonemes_only, "yes" if wav_bytes else "no", skipped)
         return jsonify({
-            "audio": encoded,
+            "audio": base64.b64encode(wav_bytes).decode("ascii") if wav_bytes else None,
             "skipped": skipped,
             "units": units,
             "spectrogram": spec_payload,
