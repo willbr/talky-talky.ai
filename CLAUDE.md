@@ -30,8 +30,15 @@ Concatenative TTS: record short audio units, stitch them at synth time. Pre-deep
 ### Storage
 
 - Metadata: SQLite at `inventory/talky.db` (stdlib `sqlite3`, no ORM). Audio: WAV files in `inventory/audio/<id>.wav` — never BLOBs.
-- Tables: `units` (every recorded copy of a word or phoneme: `kind`, `label`, `source` = isolated/word/sentence, `source_unit_id`, `source_sentence_id`, `source_word`, `prev`, `next`, `position`, `duration_ms`), `sentences` (reference recordings), `alignment_segments` (empty until the sentence splitter lands), `schema_version`.
-- IDs are `%Y%m%dT%H%M%S%f` UTC timestamps, unique across units and sentences, so lexicographic order is chronological. `inventory.is_valid_id()` guards any ID used in a path.
+- Schema v2. Tables:
+  - `units`: every recorded copy of a word or phoneme. Columns: `kind`, `label`, `source` (isolated/word/sentence), `source_unit_id`, `source_recording_id`, `source_sentence_idx`, `source_word`, `prev`, `next`, `position`, `duration_ms`.
+  - `recordings`: takes of any length, a word up to a passage, stored raw.
+  - `alignment_segments`: Praat-style tiers `sentence` / `word` / `phoneme` per recording, keyed `(recording_id, tier, sentence_idx, idx)` with `parent_idx` and an `edited` flag. Sentence rows also carry `status` (proposed/saved/excluded).
+  - `schema_version`.
+
+  A v1 database is upgraded in place on first open (`store._upgrade_v1_to_v2`).
+- IDs are `%Y%m%dT%H%M%S%f` UTC timestamps, unique across units and recordings, so lexicographic order is chronological. `inventory.is_valid_id()` guards any ID used in a path.
+- Saving a sentence in the splitter **replaces** that sentence's copies (`source="sentence"`) in one transaction (`store.replace_sentence`). Excluding a sentence deletes them. Sentence copies are never trimmed directly: the trim/split endpoints return 409 for them.
 - Every recording **appends a copy**; nothing is overwritten. Rows whose WAV has been deleted by hand are skipped on read (not auto-deleted).
 - `migrate.py` converts the pre-2026-11 file layout (`inventory/<word>.wav`, `inventory/phonemes/…`, `inventory/sentences/…`) the first time `talky.db` is created.
 
@@ -39,19 +46,36 @@ Concatenative TTS: record short audio units, stitch them at synth time. Pre-deep
 
 - `app.py` — route handlers only; an app-factory `create_app()` registers all routes. Copies are addressed by `unit_id` (`/api/units…`, editor routes take `unit_id`, default most recent)
 - `inventory.py` — `INVENTORY_DIR`, `normalise()` (lowercase, punctuation stripped), `is_valid_id()`
-- `store.py` — all DB + audio-file access: `add_unit`, `get_unit`, `list_units`, `list_labels`, `delete_unit`, `replace_unit_audio`, `best_unit` (context scoring), sentences
+- `store.py` — all DB + audio-file access:
+  - units: `add_unit`, `get_unit`, `list_units`, `list_labels`, `delete_unit`, `replace_unit_audio`, `best_unit` (context scoring, optional `exclude`)
+  - recordings: `save_recording`, `find_recordings` (whole text or inner sentence)
+  - alignment: `set_sentences`, `get_segments`, `replace_sentence`, `clear_sentence_copies`
+- `align.py` — the splitter's proposer, pure numpy with no learned weights:
+  - `split_text_sentences` + `propose_sentence_spans` (pauses matched to expected break times)
+  - `build_reference` (phonemes-only synth with known spans, excluding the sentence's own copies)
+  - `features` (MFCC, 10 ms hop) and `dtw_path`
+  - `propose(samples, span, ref, pins)`: user pins are hard DTW anchors
+
+  It is a swap point for a future tinygrad proposer.
 - `migrate.py` — one-time legacy layout → DB import
 - `phonemes.py` — canonical 39-symbol ARPABET set + CMUdict (`data/cmudict.dict`) grapheme-to-phoneme. Stress digits (`AH1`) are stripped at load time
 - `audio.py` — DSP primitives: `trim_silence`, `peak_normalise`, `apply_fade`, `concatenate` (groups), `slice_samples`, `encode_wav`
 - `extraction.py` — pure-math phoneme boundary proposal (RMS windowing + noise-floor threshold + ARPABET duration priors)
 - `spectrogram.py` — numpy STFT → uint8 log-magnitude grid, base64'd into `/api/synthesize` and `/api/sentence/audio` responses for canvas rendering
-- `synth.py` — `synthesise(sentence, phonemes_only=False)` tokenises with phrase positions, walks the resolver chain per token, falls back to per-phoneme via CMUdict. Returns `(wav, skipped, units)`; each unit carries ms spans and the `unit_id` of the copy used
+- `synth.py` — `phrase_context(text)` gives each token its position, prev/next word and **cross-word** prev/next phoneme; context is None across any punctuation (`, ; : . ! ?`). Synth and the splitter's harvest both use it, so recorded and requested contexts line up. `synthesise(sentence, phonemes_only=False)` walks the resolver chain per token and falls back to per-phoneme via CMUdict. It returns `(wav, skipped, units)`; each unit carries ms spans and the copy used (`unit_id`, `source`, `source_recording_id`, `source_sentence_idx`)
 - `resolver.py` — **the extensibility seam** for top-level tokens. `RESOLVERS = [WordResolver(), PhonemeResolver()]`, each `resolve(token, Context(prev, next, position))`. Add new fallback strategies by appending to this list
-- `books.py` — sentence sampling from `data/books/*.txt` (Gutenberg corpus); filters to 30–250 char sentences
+- `books.py` — sampling from `data/books/*.txt` (Gutenberg corpus): `sample_sentence` (30–250 chars) and `sample_passage` (3–5 consecutive sentences)
 
 ### Frontend (vanilla JS)
 
-- `static/app.js` — single module, no framework. Two tabs: Train (record words + phoneme grid + word inventory) and Speak (synth + reference recording + book sample picker)
+- `static/app.js` — main module, no framework. Two tabs:
+  - Train: the Record panel (multi-line text + book picker), the word inventory and the phoneme grid. One word saves a word copy (and opens the trim/split editor). Anything longer saves a recording and opens the splitter. "Open recording (N takes)" appears when the text already has a take.
+  - Speak: synth, compare, and the matching reference (a whole recording, or the span of one of its sentences).
+- `static/splitter.js` — the recording splitter, imported by `app.js`:
+  - One sentence at a time: a spectrogram with word and phoneme bands; ◀ ▶ and a take switcher.
+  - Drag an edge and release to pin it and re-propose. Click a segment to hear it.
+  - Re-propose, Exclude/Include, Save sentence. Editing the text re-proposes that sentence.
+  - ✎ on a sentence-sourced copy (copies panel or Speak chip) opens the splitter at its sentence.
 - Word and phoneme chips share one copies panel (`toggleUnitsPanel`): ▶ play, ✎ edit that copy, × delete
 - `static/recorder-worklet.js` — AudioWorklet that captures Float32 audio from the mic
 - WAV encoding is done client-side in `encodeWav()` (manual 44-byte header + int16 PCM). The server validates format
@@ -59,4 +83,8 @@ Concatenative TTS: record short audio units, stitch them at synth time. Pre-deep
 
 ### Synthesis flow (read `synth.synthesise` if confused)
 
-For each token, build a `Context` (previous/next word, position: `mid`, `comma` before `,;:`, `final` before `.!?` or at the end). Try every resolver; word copies score +1 per matching neighbour word and +1 for matching position, newest wins ties. If nothing resolves and the token isn't itself an ARPABET symbol, phonemise via CMUdict and pick each phoneme with `store.best_unit("phoneme", sym, prev=, next=)` (in-word neighbours). **All-or-nothing per word** — if any phoneme is missing, the whole word is skipped (returned in the `skipped` list, surfaced as red chips in the UI).
+For each token, `phrase_context` builds the context:
+- position: `mid`; `comma` before `,;:`; `final` before `.!?` or at the end
+- prev/next word, reset to None across punctuation
+
+Try every resolver. Word copies score +1 per matching neighbour word and +1 for a matching position; the newest wins ties. If nothing resolves and the token isn't itself an ARPABET symbol, phonemise via CMUdict and pick each phoneme with `store.best_unit("phoneme", sym, prev=, next=)`. Its neighbours cross word edges, using the neighbouring word's pronunciation, unless punctuation sits between. **All-or-nothing per word** — if any phoneme is missing, the whole word is skipped (returned in the `skipped` list, surfaced as red chips in the UI).

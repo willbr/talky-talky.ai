@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-07
 **Project:** talky-talky.ai
-**Status:** Approved ("build it"), implementing
+**Status:** Implemented
 **Builds on:** [2026-11-07-sqlite-unit-store-design.md](2026-11-07-sqlite-unit-store-design.md) (implemented)
 
 ## Why
