@@ -86,10 +86,49 @@ def create_schema(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
 
 
+def _open(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _create_with_migration(path: Path) -> None:
+    """Build a new database at `path`, importing any legacy files.
+
+    The database is built in `talky.db.tmp` and renamed into place only
+    after the migration commits, so a crash leaves the legacy files intact
+    and the next open starts over. Originals are deleted after the rename.
+    """
+    import migrate
+
+    root = path.parent
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    with closing(_open(tmp)) as conn:
+        create_schema(conn)
+        counts, originals = migrate.migrate(conn, root)
+        conn.commit()
+    tmp.replace(path)
+    migrate.cleanup(root, originals)
+    if any(counts.values()):
+        log.info("migrate: words=%d phonemes=%d sentences=%d",
+                 counts["words"], counts["phonemes"], counts["sentences"])
+
+
+_checked_leftovers: set[Path] = set()
+
+
 def connect() -> sqlite3.Connection:
-    """Open the database, creating it (and its schema) if absent."""
+    """Open the database, creating it (and migrating legacy files) if absent."""
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        _create_with_migration(path)
+    elif path not in _checked_leftovers:
+        _checked_leftovers.add(path)
+        import migrate
+        if migrate.has_legacy_files(path.parent):
+            log.warning("store: legacy inventory files remain beside %s; they are ignored", path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
