@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-07
 **Project:** talky-talky.ai
-**Status:** Approved, implementing
+**Status:** Implemented (store, migration, word copies, UI). Unit tests were removed at the user's request mid-build; verification was manual.
 **Builds on:** [2026-05-21-phoneme-variants-design.md](2026-05-21-phoneme-variants-design.md)
 **Followed by:** the reference-sentence splitter (separate design, not yet written)
 
