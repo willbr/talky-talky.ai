@@ -1,7 +1,12 @@
+import { initSplitter, openSplitter, closeSplitter } from './splitter.js';
+
 const SAMPLE_RATE = 22050;
 
 const els = {
-  wordInput: document.getElementById('word-input'),
+  recordText: document.getElementById('record-text'),
+  takeHint: document.getElementById('take-hint'),
+  bookLength: document.getElementById('book-length'),
+  splitterMount: document.getElementById('splitter-mount'),
   recordBtn: document.getElementById('record-btn'),
   saveBtn: document.getElementById('save-btn'),
   discardBtn: document.getElementById('discard-btn'),
@@ -17,11 +22,6 @@ const els = {
   statusStrip: document.getElementById('status-strip'),
   tabBtns: document.querySelectorAll('.tab-btn'),
   tabPanes: document.querySelectorAll('.tab-pane'),
-  recordRefBtn: document.getElementById('record-ref-btn'),
-  saveRefBtn: document.getElementById('save-ref-btn'),
-  discardRefBtn: document.getElementById('discard-ref-btn'),
-  referencePreview: document.getElementById('reference-preview'),
-  referenceStatus: document.getElementById('reference-status'),
   bookSelect: document.getElementById('book-select'),
   pickSentenceBtn: document.getElementById('pick-sentence-btn'),
   phonemesOnlyToggle: document.getElementById('phonemes-only-toggle'),
@@ -68,8 +68,6 @@ let mediaStream = null;
 let currentWavBlob = null;
 let currentPhoneme = null;   // null => recording for a word; non-null => recording for this phoneme
 let isRecording = false;
-let currentRefBlob = null;
-let isRecordingRef = false;
 
 // Phoneme editor state — null when closed.
 let editor = null;
@@ -307,10 +305,16 @@ async function toggleUnitsPanel(chip, kind, label) {
     };
 
     action('▶', 'Play', '', () => playUnit(u.id));
-    action('✎', kind === 'word' ? 'Trim / split into phonemes' : 'Trim', '', () => {
-      if (kind === 'word') openExtractEditor(label, u.id);
-      else openPhonemeEditor(label, u.id);
-    });
+    if (u.source === 'sentence') {
+      action('✎', 'Open the sentence it was cut from in the splitter', '', () => {
+        openSplitter(u.source_recording_id, u.source_sentence_idx);
+      });
+    } else {
+      action('✎', kind === 'word' ? 'Trim / split into phonemes' : 'Trim', '', () => {
+        if (kind === 'word') openExtractEditor(label, u.id);
+        else openPhonemeEditor(label, u.id);
+      });
+    }
     action('×', 'Delete', 'delete', async () => {
       if (!window.confirm(`Delete this copy of "${label}"?`)) return;
       const r = await fetch(`/api/units/${encodeURIComponent(u.id)}`, { method: 'DELETE' });
@@ -337,7 +341,7 @@ function playUnit(unitId) {
 
 function armPhoneme(symbol, example) {
   currentPhoneme = symbol;
-  els.wordInput.value = '';   // clear any half-typed word
+  els.recordText.value = '';   // clear any half-typed word
   const hint = example ? ` — as in "${example}"` : '';
   setStatus(`Recording phoneme ${symbol}${hint} — press Record`);
   // Re-paint chips so the new selection is highlighted.
@@ -395,11 +399,40 @@ async function saveWord(word, blob) {
   }
   const { word: saved, unit_id: unitId } = await r.json();
   setStatus(`saved "${saved}"`);
-  els.wordInput.value = '';
+  els.recordText.value = '';
 
   // After a successful word save, automatically offer phoneme extraction
   // on the copy that was just recorded.
   openExtractEditor(saved, unitId);
+}
+
+function wordCountOf(text) {
+  return text.split(/\s+/).filter((t) => /[\p{L}\p{N}]/u.test(t)).length;
+}
+
+// A sentence or passage: stored whole, then split in the splitter.
+async function saveRecording(text, blob) {
+  const form = new FormData();
+  form.append('text', text);
+  form.append('audio', blob, 'audio.wav');
+  let r;
+  try {
+    r = await fetch('/api/recordings', { method: 'POST', body: form });
+  } catch (e) {
+    setStatus(`save failed: ${e.message}`, true);
+    return false;
+  }
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    setStatus(`save failed: ${err.error || r.statusText}`, true);
+    return false;
+  }
+  const { id, sentences } = await r.json();
+  setStatus(`saved recording — ${sentences.length} sentence${sentences.length === 1 ? '' : 's'} to check`);
+  defaultSentence = text;
+  updateTakeHint();
+  await openSplitter(id, 0);
+  return true;
 }
 
 async function savePhoneme(symbol, blob) {
@@ -424,9 +457,10 @@ els.saveBtn.addEventListener('click', async () => {
   if (currentPhoneme) {
     await savePhoneme(currentPhoneme, currentWavBlob);
   } else {
-    const word = els.wordInput.value.trim();
-    if (!word) { setStatus('enter a word first', true); return; }
-    await saveWord(word, currentWavBlob);
+    const text = els.recordText.value.trim();
+    if (!text) { setStatus('type what you said first', true); return; }
+    if (wordCountOf(text) === 1) await saveWord(text, currentWavBlob);
+    else if (!(await saveRecording(text, currentWavBlob))) return;
   }
 
   currentWavBlob = null;
@@ -688,11 +722,15 @@ function renderRenderedWords(units) {
     const edit = document.createElement('button');
     edit.className = 'chip-edit';
     edit.textContent = '✎';
-    edit.title = `Edit this copy of "${u.token}"`;
+    const fromSentence = u.source === 'sentence';
+    edit.title = fromSentence
+      ? `Open the sentence this "${u.token}" was cut from`
+      : `Edit this copy of "${u.token}"`;
     edit.addEventListener('click', (e) => {
       e.stopPropagation();
       activateTab('train-tab');
-      openExtractEditor(u.token, u.unit_id);
+      if (fromSentence) openSplitter(u.source_recording_id, u.source_sentence_idx);
+      else openExtractEditor(u.token, u.unit_id);
     });
     chip.appendChild(edit);
 
@@ -715,8 +753,8 @@ function renderSkipped(skipped) {
     chip.textContent = w;
     chip.addEventListener('click', () => {
       activateTab('train-tab');
-      els.wordInput.value = w;
-      els.wordInput.focus();
+      els.recordText.value = w;
+      els.recordText.focus();
     });
     els.skippedList.appendChild(chip);
   }
@@ -725,86 +763,34 @@ function renderSkipped(skipped) {
 els.synthBtn.addEventListener('click', synthesise);
 els.compareBtn.addEventListener('click', compareSynth);
 
-function setRefStatus(text, isError = false) {
-  els.referenceStatus.textContent = text;
-  els.referenceStatus.style.color = isError ? 'var(--error)' : 'var(--muted)';
+els.recordText.addEventListener('input', () => {
+  if (currentPhoneme && els.recordText.value.trim()) disarmPhoneme();
+  clearTimeout(takeHintTimer);
+  takeHintTimer = setTimeout(updateTakeHint, 400);
+});
+
+// "Open recording" when the text already has takes (or is a sentence of one).
+let takeHintTimer = null;
+let takeHintTarget = null;
+
+async function updateTakeHint() {
+  const text = els.recordText.value.trim();
+  takeHintTarget = null;
+  els.takeHint.hidden = true;
+  if (wordCountOf(text) < 2) return;
+  let matches;
+  try {
+    const r = await fetch(`/api/recordings/find?text=${encodeURIComponent(text)}`);
+    ({ matches } = await r.json());
+  } catch (e) { return; }
+  if (text !== els.recordText.value.trim() || !matches.length) return;
+  takeHintTarget = matches[0];
+  els.takeHint.textContent = `Open recording (${matches.length} take${matches.length === 1 ? '' : 's'})`;
+  els.takeHint.hidden = false;
 }
 
-function setRefButtons({ recording, hasWav }) {
-  els.recordRefBtn.textContent = recording ? '■ Stop' : '● Record reference';
-  els.recordRefBtn.disabled = false;
-  els.saveRefBtn.disabled = !hasWav;
-  els.discardRefBtn.disabled = !hasWav;
-}
-
-els.recordRefBtn.addEventListener('click', async () => {
-  if (isRecordingRef) {
-    isRecordingRef = false;
-    const floats = await stopRecording();
-    const int16 = floatsToInt16(floats);
-    currentRefBlob = encodeWav(int16, SAMPLE_RATE);
-    els.referencePreview.src = URL.createObjectURL(currentRefBlob);
-    setRefStatus(`captured ${(floats.length / SAMPLE_RATE).toFixed(2)}s — review then Save`);
-    setRefButtons({ recording: false, hasWav: true });
-    return;
-  }
-  const sentence = els.sentenceInput.value.trim();
-  if (!sentence) {
-    setRefStatus('type a sentence first', true);
-    return;
-  }
-  try {
-    await startRecording();
-    isRecordingRef = true;
-    setRefStatus('recording…');
-    setRefButtons({ recording: true, hasWav: false });
-  } catch (err) {
-    isRecordingRef = false;
-    setRefStatus('mic permission denied or unavailable', true);
-    setRefButtons({ recording: false, hasWav: false });
-  }
-});
-
-els.discardRefBtn.addEventListener('click', () => {
-  currentRefBlob = null;
-  els.referencePreview.removeAttribute('src');
-  setRefStatus('discarded');
-  setRefButtons({ recording: false, hasWav: false });
-});
-
-els.saveRefBtn.addEventListener('click', async () => {
-  if (!currentRefBlob) return;
-  const sentence = els.sentenceInput.value.trim();
-  if (!sentence) {
-    setRefStatus('sentence is empty', true);
-    return;
-  }
-  const form = new FormData();
-  form.append('sentence', sentence);
-  form.append('audio', currentRefBlob, 'audio.wav');
-  let r;
-  try {
-    r = await fetch('/api/sentence/record', { method: 'POST', body: form });
-  } catch (e) {
-    setRefStatus(`save failed: ${e.message}`, true);
-    return;
-  }
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    setRefStatus(`save failed: ${err.error || r.statusText}`, true);
-    return;
-  }
-  const { id } = await r.json();
-  setRefStatus(`saved reference ${id}`);
-  currentRefBlob = null;
-  els.referencePreview.removeAttribute('src');
-  setRefButtons({ recording: false, hasWav: false });
-});
-
-setRefButtons({ recording: false, hasWav: false });
-
-els.wordInput.addEventListener('input', () => {
-  if (currentPhoneme && els.wordInput.value.trim()) disarmPhoneme();
+els.takeHint.addEventListener('click', () => {
+  if (takeHintTarget) openSplitter(takeHintTarget.recording_id, takeHintTarget.sentence_idx ?? 0);
 });
 
 async function refreshBooks() {
@@ -828,11 +814,13 @@ els.pickSentenceBtn.addEventListener('click', async () => {
   const r = await fetch('/api/books/sample', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ book: els.bookSelect.value }),
+    body: JSON.stringify({ book: els.bookSelect.value, length: els.bookLength.value }),
   });
   if (!r.ok) return;
   const { sentence } = await r.json();
-  els.sentenceInput.value = sentence;
+  els.recordText.value = sentence;
+  disarmPhoneme();
+  updateTakeHint();
 });
 
 // The Speak box always starts with a sentence: the most recent reference
@@ -842,9 +830,9 @@ let defaultSentence = FALLBACK_SENTENCE;
 
 async function loadDefaultSentence() {
   try {
-    const r = await fetch('/api/sentences');
-    const { sentences } = await r.json();
-    if (sentences.length) defaultSentence = sentences[sentences.length - 1].text;
+    const r = await fetch('/api/recordings');
+    const { recordings } = await r.json();
+    if (recordings.length) defaultSentence = recordings[recordings.length - 1].text;
   } catch (e) { /* keep the fallback */ }
   ensureSentence();
 }
@@ -853,6 +841,13 @@ function ensureSentence() {
   if (!els.sentenceInput.value.trim()) els.sentenceInput.value = defaultSentence;
 }
 
+initSplitter({
+  mount: els.splitterMount,
+  setStatus,
+  refreshInventory,
+  beforeOpen: () => { closeExtractEditor(); activateTab('train-tab'); },
+});
+
 refreshInventory();
 refreshBooks();
 loadDefaultSentence();
@@ -860,6 +855,7 @@ setButtons({ recording: false, hasWav: false });
 
 async function openExtractEditor(word, unitId = null) {
   closeExtractEditor();
+  closeSplitter();
 
   let prop;
   try {
@@ -906,6 +902,7 @@ async function openExtractEditor(word, unitId = null) {
 
 async function openPhonemeEditor(symbol, unitId = null) {
   closeExtractEditor();
+  closeSplitter();
 
   let prop;
   try {

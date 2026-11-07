@@ -19,18 +19,29 @@
 
   <div id="train-tab" class="tab-pane active" role="tabpanel">
     <section id="record-pane">
-      <h2>Record a word</h2>
-      <label>Word
-        <input id="word-input" type="text" autocomplete="off" placeholder="hello">
-      </label>
+      <h2>Record</h2>
+      <div class="book-picker">
+        <label for="book-select">From book:</label>
+        <select id="book-select"><option value="any">any</option></select>
+        <select id="book-length" title="How much text to pick">
+          <option value="sentence">sentence</option>
+          <option value="passage">passage</option>
+        </select>
+        <button id="pick-sentence-btn" class="secondary">🎲 Pick</button>
+      </div>
+      <textarea id="record-text" rows="3" autocomplete="off"
+                placeholder="a word, a sentence, or a whole passage"></textarea>
+      <p class="hint">One word is saved as a word copy. Anything longer opens the splitter, where you check the proposed word and phoneme boundaries one sentence at a time.</p>
       <div class="controls">
         <button id="record-btn">● Record</button>
         <button id="save-btn" disabled>Save</button>
         <button id="discard-btn" disabled>Discard</button>
+        <button id="take-hint" class="secondary" hidden></button>
       </div>
       <audio id="preview" controls></audio>
       <p id="record-status" role="status"></p>
     </section>
+    <div id="splitter-mount"></div>
 
     <section id="inventory-bar">
       <h2>Word inventory</h2>
@@ -47,11 +58,6 @@
   <div id="speak-tab" class="tab-pane" role="tabpanel">
     <section id="synth-pane">
       <h2>Synthesise a sentence</h2>
-      <div class="book-picker">
-        <label for="book-select">From book:</label>
-        <select id="book-select"><option value="any">any</option></select>
-        <button id="pick-sentence-btn" class="secondary">🎲 Pick sentence</button>
-      </div>
       <textarea id="sentence-input" rows="3" placeholder="hello world"></textarea>
       <div class="synth-controls">
         <button id="synth-btn">Synthesise</button>
@@ -89,15 +95,6 @@
       <div id="rendered-words" aria-live="polite"></div>
       <div id="skipped-list" aria-live="polite"></div>
 
-      <h3>Reference recording</h3>
-      <p class="hint">Record yourself saying the same sentence — saved with the text for later use as training data.</p>
-      <div class="controls">
-        <button id="record-ref-btn">● Record reference</button>
-        <button id="save-ref-btn" disabled>Save</button>
-        <button id="discard-ref-btn" disabled>Discard</button>
-      </div>
-      <audio id="reference-preview" controls></audio>
-      <p id="reference-status" role="status"></p>
     </section>
   </div>
 

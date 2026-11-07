@@ -423,6 +423,10 @@ def create_app() -> Flask:
         log.info("recordings: saved %s (%d sentences) %r", rec_id, len(sents), text[:80])
         return jsonify({"id": rec_id, "sentences": sents}), 200
 
+    @flask_app.route("/api/recordings", methods=["GET"])
+    def api_recordings_list():
+        return jsonify({"recordings": store.list_recordings()})
+
     @flask_app.route("/api/recordings/find")
     def api_recordings_find():
         return jsonify({"matches": store.find_recordings(request.args.get("text", ""))})

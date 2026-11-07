@@ -412,3 +412,71 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   font-size: 0.85em;
 }
 .chip-edit:hover { color: var(--accent); }
+
+#record-pane textarea { margin-bottom: 0.4rem; resize: vertical; }
+#record-pane .hint { color: var(--muted); font-size: 0.85em; margin: 0 0 0.6rem 0; }
+#take-hint {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+/* --- recording splitter --- */
+#splitter {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  margin: 1rem 0;
+  padding: 1rem;
+}
+#splitter .splitter-header {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+#splitter .splitter-header h3 { margin: 0; font-size: 1rem; }
+#splitter .splitter-progress { color: var(--muted); font-size: 0.9em; }
+#splitter .splitter-header select { width: auto; padding: 0.2rem 0.4rem; }
+#splitter .splitter-nav { margin-left: auto; display: flex; align-items: center; gap: 0.3rem; color: var(--muted); font-size: 0.9em; }
+#splitter .splitter-nav button {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 0.1rem 0.5rem;
+  margin: 0;
+}
+#splitter .splitter-nav button:disabled { border-color: #3a3d44; color: #3a3d44; }
+#splitter .dismiss {
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.3rem;
+  padding: 0 0.4rem;
+  margin: 0;
+}
+#splitter .splitter-text { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
+#splitter .splitter-text input { flex: 1; }
+#splitter .splitter-badge {
+  font-size: 0.8em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  white-space: nowrap;
+}
+#splitter .splitter-badge[data-status="saved"] { border-color: #6fcf97; color: #6fcf97; }
+#splitter .splitter-badge[data-status="excluded"] { border-color: var(--error); color: var(--error); }
+#splitter canvas.splitter-canvas {
+  display: block;
+  width: 100%;
+  height: 194px;
+  border-radius: 4px;
+  cursor: ew-resize;
+  margin-bottom: 0.6rem;
+}
+#splitter .actions button:not(.save) {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
