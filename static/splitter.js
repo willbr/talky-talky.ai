@@ -415,16 +415,16 @@ function hitEdge(x, y) {
     const d = Math.abs(xOf(ms) - x);
     if (d < bestD) { bestD = d; best = handle; }
   };
-  if (y >= SPEC_H + WORD_H) {
+  // Every line is grabbable wherever it is drawn; the nearest wins, and a
+  // word boundary wins a tie (it is listed first and ties don't replace).
+  for (const wd of S.data.words) {
+    consider({ tier: 'word', idx: wd.idx, edge: 'start' }, wd.start_ms);
+    consider({ tier: 'word', idx: wd.idx, edge: 'end' }, wd.end_ms);
+  }
+  if (y >= SPEC_H * 0.5) {
     for (const p of S.data.phonemes) {
       const prev = S.data.phonemes[p.idx - 1];
       if (prev && prev.parent_idx === p.parent_idx) consider({ tier: 'phoneme', idx: p.idx, edge: 'start' }, p.start_ms);
-    }
-  }
-  if (!best) {
-    for (const wd of S.data.words) {
-      consider({ tier: 'word', idx: wd.idx, edge: 'start' }, wd.start_ms);
-      consider({ tier: 'word', idx: wd.idx, edge: 'end' }, wd.end_ms);
     }
   }
   return best;
@@ -442,29 +442,92 @@ function applyDrag(h, ms) {
   const W = S.data.words;
   const P = S.data.phonemes;
   if (h.tier === 'phoneme') {
+    // An edge inside a word: it may push the phonemes ahead of it (each
+    // keeps MIN_MS) but never past the word's own edges.
     const p = P[h.idx];
-    const prev = P[h.idx - 1];
-    ms = Math.max(prev.start_ms + MIN_MS, Math.min(p.end_ms - MIN_MS, ms));
-    p.start_ms = prev.end_ms = Math.round(ms);
-    S.edited.add(`p:${p.idx}`).add(`p:${prev.idx}`);
+    const wd = W[p.parent_idx];
+    const phs = wordPhonemes(wd.idx);
+    const k = phs.indexOf(p);
+    ms = Math.round(Math.max(wd.start_ms + MIN_MS * k, Math.min(wd.end_ms - MIN_MS * (phs.length - k), ms)));
+    p.start_ms = phs[k - 1].end_ms = ms;
+    pushForward(phs, k);
+    pushBackward(phs, k - 1);
     return;
   }
-  const wd = W[h.idx];
-  const phs = wordPhonemes(h.idx);
-  const v0 = 0;
-  const v1 = S.rec.duration_ms;
+  // A word edge is either shared with the touching neighbour (one boundary:
+  // both words and their edge phonemes move together) or faces a pause.
+  const left = h.edge === 'start' ? W[h.idx - 1] : W[h.idx];     // word ending here
+  const right = h.edge === 'start' ? W[h.idx] : W[h.idx + 1];    // word starting here
+  const shared = !!h.partner;
+  // The boundary pushes the word's phonemes ahead of it, squashing each to
+  // MIN_MS at most; it stops only when the whole word is squashed.
+  const innerLeft = (w) => w.start_ms + MIN_MS * Math.max(1, wordPhonemes(w.idx).length);
+  const innerRight = (w) => w.end_ms - MIN_MS * Math.max(1, wordPhonemes(w.idx).length);
+  let lo;
+  let hi;
   if (h.edge === 'start') {
-    const lo = h.idx > 0 ? W[h.idx - 1].end_ms : v0;
-    const hi = (phs.length ? phs[0].end_ms : wd.end_ms) - MIN_MS;
-    wd.start_ms = Math.round(Math.max(lo, Math.min(hi, ms)));
-    if (phs.length) { phs[0].start_ms = wd.start_ms; S.edited.add(`p:${phs[0].idx}`); }
+    lo = shared ? innerLeft(left) : (left ? left.end_ms : 0);
+    hi = innerRight(right);
   } else {
-    const lo = (phs.length ? phs[phs.length - 1].start_ms : wd.start_ms) + MIN_MS;
-    const hi = h.idx < W.length - 1 ? W[h.idx + 1].start_ms : v1;
-    wd.end_ms = Math.round(Math.max(lo, Math.min(hi, ms)));
-    if (phs.length) { phs[phs.length - 1].end_ms = wd.end_ms; S.edited.add(`p:${phs[phs.length - 1].idx}`); }
+    lo = innerLeft(left);
+    hi = shared ? innerRight(right) : (right ? right.start_ms : S.rec.duration_ms);
   }
-  S.edited.add(`w:${wd.idx}`);
+  ms = Math.round(Math.max(lo, Math.min(hi, ms)));
+  if (h.edge === 'end' || shared) setWordEnd(left, ms);
+  if (h.edge === 'start' || shared) setWordStart(right, ms);
+}
+
+function setWordStart(w, ms) {
+  w.start_ms = ms;
+  const p = wordPhonemes(w.idx);
+  if (p.length) { p[0].start_ms = ms; pushForward(p, 0); }
+  S.edited.add(`w:${w.idx}`);
+}
+
+function setWordEnd(w, ms) {
+  w.end_ms = ms;
+  const p = wordPhonemes(w.idx);
+  if (p.length) { p[p.length - 1].end_ms = ms; pushBackward(p, p.length - 1); }
+  S.edited.add(`w:${w.idx}`);
+}
+
+// phs[k].start just moved right: shove later phonemes so each keeps MIN_MS.
+function pushForward(phs, k) {
+  for (let j = k; j < phs.length; j++) {
+    S.edited.add(`p:${phs[j].idx}`);
+    if (j > k) {
+      if (phs[j].start_ms >= phs[j - 1].end_ms) break;
+      phs[j].start_ms = phs[j - 1].end_ms;
+    }
+    if (phs[j].end_ms >= phs[j].start_ms + MIN_MS) break;
+    phs[j].end_ms = phs[j].start_ms + MIN_MS;
+  }
+}
+
+// phs[k].end just moved left: shove earlier phonemes so each keeps MIN_MS.
+function pushBackward(phs, k) {
+  for (let j = k; j >= 0; j--) {
+    S.edited.add(`p:${phs[j].idx}`);
+    if (j < k) {
+      if (phs[j].end_ms <= phs[j + 1].start_ms) break;
+      phs[j].end_ms = phs[j + 1].start_ms;
+    }
+    if (phs[j].start_ms <= phs[j].end_ms - MIN_MS) break;
+    phs[j].start_ms = phs[j].end_ms - MIN_MS;
+  }
+}
+
+// The other half of a word boundary when two words touch, else null.
+function partnerOf(h) {
+  if (!h || h.tier !== 'word') return null;
+  const W = S.data.words;
+  if (h.edge === 'end' && W[h.idx + 1] && Math.abs(W[h.idx + 1].start_ms - W[h.idx].end_ms) <= 1) {
+    return { tier: 'word', idx: h.idx + 1, edge: 'start' };
+  }
+  if (h.edge === 'start' && W[h.idx - 1] && Math.abs(W[h.idx - 1].end_ms - W[h.idx].start_ms) <= 1) {
+    return { tier: 'word', idx: h.idx - 1, edge: 'end' };
+  }
+  return null;
 }
 
 function attachCanvas(canvas) {
@@ -474,6 +537,7 @@ function attachCanvas(canvas) {
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
     const h = hitEdge(x, y);
+    if (h) h.partner = partnerOf(h);
     S.drag = { handle: h, moved: false, x, y, view: [...S.view] };
     canvas.style.cursor = h ? 'ew-resize' : 'grabbing';
   });
@@ -527,10 +591,12 @@ function attachCanvas(canvas) {
       if (seg) play(seg.start_ms, seg.end_ms);
       return;
     }
-    const seg = handle.tier === 'word' ? S.data.words[handle.idx] : S.data.phonemes[handle.idx];
-    const ms = handle.edge === 'start' ? seg.start_ms : seg.end_ms;
-    S.pins = S.pins.filter((p) => !(p.tier === handle.tier && p.idx === handle.idx && p.edge === handle.edge));
-    S.pins.push({ ...handle, ms });
+    for (const hh of [handle, handle.partner].filter(Boolean)) {
+      const seg = hh.tier === 'word' ? S.data.words[hh.idx] : S.data.phonemes[hh.idx];
+      const ms = hh.edge === 'start' ? seg.start_ms : seg.end_ms;
+      S.pins = S.pins.filter((p) => !(p.tier === hh.tier && p.idx === hh.idx && p.edge === hh.edge));
+      S.pins.push({ tier: hh.tier, idx: hh.idx, edge: hh.edge, ms });
+    }
     loadSentence(S.idx, { pins: S.pins });
   });
   window.addEventListener('resize', () => S && S.data && draw());
