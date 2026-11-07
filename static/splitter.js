@@ -10,9 +10,12 @@ const PH_H = 20;
 const HIT_PX = 6;
 const MIN_MS = 5;
 const PIN_COLOUR = '#e8b04a';
+const MIN_VIEW_MS = 120;
+const WHEEL_ZOOM = 0.0015;   // per wheel-delta unit; ~1.2x per notch
 
 let deps = null;
 let S = null;   // splitter state; null when closed
+let windowListenersAttached = false;
 
 export function initSplitter(d) {
   deps = d;
@@ -50,7 +53,7 @@ export async function openSplitter(recordingId, sentenceIdx = 0) {
   }
   S = {
     rec, idx: Math.max(0, Math.min(sentenceIdx ?? 0, rec.sentences.length - 1)),
-    data: null, pins: [], edited: new Set(), drag: null,
+    data: null, pins: [], edited: new Set(), drag: null, view: null, detail: null,
     audioCtx: null, audioBuf: null, container: null, canvas: null, els: {},
   };
   buildDom();
@@ -86,8 +89,12 @@ async function loadSentence(idx, body) {
     const data = await postJson(
       `/api/recordings/${encodeURIComponent(S.rec.id)}/sentences/${idx}/propose`, body);
     if (!S) return;
+    const sameSentence = S.data && S.data.sentence.idx === idx;
     S.data = data;
     S.rec.sentences[idx] = data.sentence;
+    // Re-proposals (pins, text) keep the zoom; a new sentence starts fitted.
+    if (!sameSentence || !S.view) { S.view = [...data.view_ms]; S.detail = null; }
+    scheduleDetail();
     if (!body.pins) { S.pins = []; S.edited = new Set(); }
     // Saved alignments come back with their stored edited flags.
     for (const w of data.words) if (w.edited) S.edited.add(`w:${w.idx}`);
@@ -165,11 +172,25 @@ function buildDom() {
   const save = button('Save sentence', 'Store these boundaries and cut copies', saveSentence, 'save');
   actions.append(playBtn, repropose, exclude, save);
 
-  c.append(header, textRow, canvas, actions);
+  const zoom = document.createElement('div');
+  zoom.className = 'splitter-zoom';
+  const zoomLabel = document.createElement('span');
+  zoomLabel.className = 'splitter-zoom-label';
+  const zoomHint = document.createElement('span');
+  zoomHint.className = 'splitter-zoom-hint';
+  zoomHint.textContent = 'wheel to zoom · drag background to pan · click a word to hear it';
+  zoom.append(
+    button('−', 'Zoom out', () => S && S.data && zoomCentre(1.6)),
+    button('＋', 'Zoom in', () => S && S.data && zoomCentre(1 / 1.6)),
+    button('Fit', 'Show the whole sentence', fitView),
+    zoomLabel, zoomHint,
+  );
+
+  c.append(header, textRow, zoom, canvas, actions);
   deps.mount.appendChild(c);
   S.container = c;
   S.canvas = canvas;
-  S.els = { title, progress, takes, prev, next, pos, text, badge, exclude, save };
+  S.els = { title, progress, takes, prev, next, pos, text, badge, exclude, save, zoomLabel };
   attachCanvas(canvas);
 }
 
@@ -205,13 +226,76 @@ function render() {
 // --- drawing --------------------------------------------------------------------
 
 function xOf(ms) {
-  const [v0, v1] = S.data.view_ms;
+  const [v0, v1] = S.view;
   return ((ms - v0) / Math.max(1, v1 - v0)) * S.canvas.width;
 }
 
 function msOf(x) {
-  const [v0, v1] = S.data.view_ms;
+  const [v0, v1] = S.view;
   return v0 + (x / S.canvas.width) * (v1 - v0);
+}
+
+// --- zoom -------------------------------------------------------------------------
+
+function setView(v0, v1) {
+  const dur = S.rec.duration_ms;
+  let span = Math.max(MIN_VIEW_MS, Math.min(dur, v1 - v0));
+  v0 = Math.max(0, Math.min(dur - span, v0));
+  S.view = [v0, v0 + span];
+  draw();
+  scheduleDetail();
+}
+
+function zoomAt(ms, factor) {
+  const [v0, v1] = S.view;
+  const span = Math.max(MIN_VIEW_MS, Math.min(S.rec.duration_ms, (v1 - v0) * factor));
+  const frac = (ms - v0) / (v1 - v0);
+  setView(ms - frac * span, ms - frac * span + span);
+}
+
+function zoomCentre(factor) {
+  zoomAt((S.view[0] + S.view[1]) / 2, factor);
+}
+
+function fitView() {
+  if (S && S.data) setView(...S.data.view_ms);
+}
+
+// A sharper spectrogram for the visible span (the proposal's own covers the
+// whole sentence at ~12 ms per column, which turns to blocks when zoomed).
+let detailTimer = null;
+
+function scheduleDetail() {
+  clearTimeout(detailTimer);
+  detailTimer = setTimeout(fetchDetail, 120);
+}
+
+async function fetchDetail() {
+  if (!S || !S.data || !S.view) return;
+  const base = S.data.spectrogram;
+  const [v0, v1] = S.view;
+  const [b0, b1] = S.data.view_ms;
+  const span = v1 - v0;
+  if (span > 0.6 * (b1 - b0) && v0 >= b0 && v1 <= b1) return;   // base is sharp enough
+  const d = S.detail;
+  if (d && d.start_ms <= v0 && d.end_ms >= v1 && d.view_span < span * 1.5) return;
+  const margin = span * 0.25;
+  const q = new URLSearchParams({
+    start_ms: Math.max(0, Math.round(v0 - margin)),
+    end_ms: Math.min(S.rec.duration_ms, Math.round(v1 + margin)),
+    width: Math.round(S.canvas.width * 1.5),
+    lo: base.lo, hi: base.hi,
+  });
+  const recId = S.rec.id;
+  try {
+    const spec = await getJson(`/api/recordings/${encodeURIComponent(recId)}/spectrogram?${q}`);
+    if (!S || S.rec.id !== recId || !spec.n_frames) return;
+    spec.bytes = atob(spec.data);
+    spec.end_ms = spec.start_ms + spec.duration_ms;
+    spec.view_span = span;
+    S.detail = spec;
+    draw();
+  } catch (e) { /* keep the coarse spectrogram */ }
 }
 
 function isPinned(tier, idx, edge) {
@@ -228,18 +312,34 @@ function draw() {
   ctx.fillRect(0, 0, w, canvas.height);
   if (!S.data) return;
 
-  // Spectrogram of the view.
-  const spec = S.data.spectrogram;
-  if (spec && spec.n_frames) {
-    const bin = atob(spec.data);
+  // Spectrogram of the view: the sharp detail where it covers, else the
+  // proposal's coarse one; columns outside both stay dark.
+  const base = S.data.spectrogram;
+  if (base && base.n_frames && !base.bytes) {
+    base.bytes = atob(base.data);
+    base.start_ms = S.data.view_ms[0];
+  }
+  const sources = [S.detail, base].filter((s) => s && s.n_frames);
+  if (sources.length) {
     const img = ctx.createImageData(w, SPEC_H);
-    const nF = spec.n_frames;
-    const nB = spec.n_freqs;
+    const rowBin = [];
+    for (let y = 0; y < SPEC_H; y++) rowBin.push((SPEC_H - 1 - y) / SPEC_H);
     for (let x = 0; x < w; x++) {
-      const f = Math.min(nF - 1, Math.floor((x / w) * nF));
+      const ms = msOf(x + 0.5);
+      let src = null;
+      let f = -1;
+      for (const s of sources) {
+        const fr = Math.round((ms - s.start_ms - (s.centre_ms || 0)) / s.hop_ms);
+        if (fr >= 0 && fr < s.n_frames) { src = s; f = fr; break; }
+      }
+      if (!src) {
+        for (let y = 0; y < SPEC_H; y++) img.data.set([26, 27, 30, 255], (y * w + x) * 4);
+        continue;
+      }
+      const nB = src.n_freqs;
       for (let y = 0; y < SPEC_H; y++) {
-        const b = Math.min(nB - 1, Math.floor(((SPEC_H - 1 - y) / SPEC_H) * nB));
-        const v = bin.charCodeAt(f * nB + b);
+        const b = Math.min(nB - 1, Math.floor(rowBin[y] * nB));
+        const v = src.bytes.charCodeAt(f * nB + b);
         const i = (y * w + x) * 4;
         img.data[i] = (v * 143) >> 8;
         img.data[i + 1] = (v * 223) >> 8;
@@ -249,6 +349,7 @@ function draw() {
     }
     ctx.putImageData(img, 0, 0);
   }
+  S.els.zoomLabel.textContent = `${((S.view[1] - S.view[0]) / 1000).toFixed(2)} s visible`;
 
   // Bands: grey background = pause / outside any word.
   ctx.fillStyle = '#2a2c31';
@@ -349,7 +450,8 @@ function applyDrag(h, ms) {
   }
   const wd = W[h.idx];
   const phs = wordPhonemes(h.idx);
-  const [v0, v1] = S.data.view_ms;
+  const v0 = 0;
+  const v1 = S.rec.duration_ms;
   if (h.edge === 'start') {
     const lo = h.idx > 0 ? W[h.idx - 1].end_ms : v0;
     const hi = (phs.length ? phs[0].end_ms : wd.end_ms) - MIN_MS;
@@ -371,14 +473,45 @@ function attachCanvas(canvas) {
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
     const h = hitEdge(x, y);
-    S.drag = { handle: h, moved: false, x, y };
+    S.drag = { handle: h, moved: false, x, y, view: [...S.view] };
+    canvas.style.cursor = h ? 'ew-resize' : 'grabbing';
   });
+  canvas.addEventListener('mousemove', (e) => {
+    if (!S || !S.data || S.drag) return;
+    const r = canvas.getBoundingClientRect();
+    canvas.style.cursor = hitEdge(e.clientX - r.left, e.clientY - r.top) ? 'ew-resize' : 'grab';
+  });
+  canvas.addEventListener('wheel', (e) => {
+    if (!S || !S.data) return;
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const scale = e.deltaMode === 1 ? 40 : 1;   // lines → px
+    const dx = e.deltaX * scale;
+    const dy = e.deltaY * scale;
+    if (e.shiftKey || Math.abs(dx) > Math.abs(dy)) {
+      const msPerPx = (S.view[1] - S.view[0]) / canvas.width;
+      const d = (Math.abs(dx) > Math.abs(dy) ? dx : dy) * msPerPx;
+      setView(S.view[0] + d, S.view[1] + d);
+    } else {
+      zoomAt(msOf(e.clientX - r.left), Math.exp(dy * WHEEL_ZOOM));
+    }
+  }, { passive: false });
+  if (windowListenersAttached) return;
+  windowListenersAttached = true;
   window.addEventListener('mousemove', (e) => {
-    if (!S || !S.drag || !S.drag.handle) return;
+    if (!S || !S.drag) return;
     const r = S.canvas.getBoundingClientRect();
-    const x = Math.max(0, Math.min(S.canvas.width, e.clientX - r.left));
-    if (Math.abs(x - S.drag.x) < 2 && !S.drag.moved) return;
+    const rawX = e.clientX - r.left;
+    if (Math.abs(rawX - S.drag.x) < 3 && !S.drag.moved) return;
     S.drag.moved = true;
+    if (!S.drag.handle) {
+      // Pan: the point under the mouse stays under the mouse.
+      const [v0, v1] = S.drag.view;
+      const d = ((rawX - S.drag.x) / S.canvas.width) * (v1 - v0);
+      setView(v0 - d, v1 - d);
+      return;
+    }
+    const x = Math.max(0, Math.min(S.canvas.width, rawX));
     applyDrag(S.drag.handle, msOf(x));
     draw();
   });
@@ -386,6 +519,8 @@ function attachCanvas(canvas) {
     if (!S || !S.drag) return;
     const { handle, moved, x, y } = S.drag;
     S.drag = null;
+    S.canvas.style.cursor = '';
+    if (moved && !handle) return;   // a pan
     if (!moved) {
       const seg = hitSegment(x, y);
       if (seg) play(seg.start_ms, seg.end_ms);

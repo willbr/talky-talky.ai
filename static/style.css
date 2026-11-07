@@ -480,3 +480,20 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   border: 1px solid var(--accent);
   color: var(--accent);
 }
+#splitter canvas.splitter-canvas { cursor: grab; }
+#splitter .splitter-zoom {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.85em;
+}
+#splitter .splitter-zoom button {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 0.1rem 0.6rem;
+  margin: 0;
+}
+#splitter .splitter-zoom-label { color: var(--fg); margin-left: 0.4rem; }
+#splitter .splitter-zoom-hint { color: var(--muted); margin-left: auto; }

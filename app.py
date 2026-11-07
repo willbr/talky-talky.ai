@@ -55,14 +55,17 @@ def _duration_ms(samples: np.ndarray) -> int:
     return int(len(samples) * 1000 / audio.SAMPLE_RATE)
 
 
-def _spectrogram_payload(samples: np.ndarray) -> dict:
-    spec = spectrogram.compute(samples)
+def _spectrogram_payload(samples: np.ndarray, **kw) -> dict:
+    spec = spectrogram.compute(samples, **kw)
     return {
         "data": base64.b64encode(spec["data"]).decode("ascii"),
         "n_frames": spec["n_frames"],
         "n_freqs": spec["n_freqs"],
         "hop_ms": spec["hop_ms"],
         "duration_ms": spec["duration_ms"],
+        "centre_ms": spec["centre_ms"],
+        "lo": spec["lo"],
+        "hi": spec["hi"],
     }
 
 
@@ -443,6 +446,36 @@ def create_app() -> Flask:
         if store.get_recording(rec_id) is None:
             return jsonify({"error": "recording not found"}), 404
         return send_file(store.recording_path(rec_id).resolve(), mimetype="audio/wav")
+
+    @flask_app.route("/api/recordings/<rec_id>/spectrogram")
+    def api_recording_spectrogram(rec_id):
+        """Spectrogram of [start_ms, end_ms] sized for a `width`-pixel canvas,
+        so a zoomed-in view stays sharp. `lo`/`hi` keep brightness steady."""
+        rec = store.get_recording(rec_id)
+        if rec is None:
+            return jsonify({"error": "recording not found"}), 404
+        try:
+            start = max(0, int(float(request.args["start_ms"])))
+            end = min(rec["duration_ms"], int(float(request.args["end_ms"])))
+            width = max(50, min(4000, int(request.args.get("width", 800))))
+            vrange = None
+            if "lo" in request.args and "hi" in request.args:
+                vrange = (float(request.args["lo"]), float(request.args["hi"]))
+        except (KeyError, ValueError):
+            return jsonify({"error": "start_ms and end_ms are required"}), 400
+        if end - start < 20:
+            return jsonify({"error": "span too short"}), 400
+        samples, _ = audio.read_wav(store.recording_path(rec_id))
+        sr = audio.SAMPLE_RATE
+        # Pad by half a window so frame centres can cover the span's edges.
+        pad = spectrogram.N_FFT // 2
+        s0 = max(0, int(start * sr / 1000) - pad)
+        clip = samples[s0: int(end * sr / 1000) + pad]
+        span = int((end - start) * sr / 1000)
+        hop = max(16, min(spectrogram.HOP, span // max(1, width // 2)))
+        payload = _spectrogram_payload(clip, hop=hop, value_range=vrange)
+        payload["start_ms"] = s0 * 1000 / sr
+        return jsonify(payload)
 
     def _with_dict_flags(words: list[dict], text: str) -> list[dict]:
         tcs = synth.phrase_context(text)
