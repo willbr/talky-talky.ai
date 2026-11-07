@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import re
+from functools import lru_cache
 from pathlib import Path
 
 BOOKS_DIR = Path(__file__).parent / "data" / "books"
@@ -20,14 +21,25 @@ def list_books() -> list[str]:
     return sorted(p.stem for p in BOOKS_DIR.glob("*.txt"))
 
 
-def _read_sentences(book: str) -> list[str]:
+@lru_cache(maxsize=None)
+def _all_sentences(book: str) -> tuple[str, ...]:
+    """Every sentence of a book, cached per process (books don't change)."""
     path = BOOKS_DIR / f"{book}.txt"
     if not path.is_file():
-        return []
-    text = path.read_text(encoding="utf-8")
-    normalised = _WS_RE.sub(" ", text).strip()
-    sentences = _SENTENCE_SPLIT_RE.split(normalised)
-    return [s for s in sentences if MIN_SENTENCE_LEN <= len(s) <= MAX_SENTENCE_LEN]
+        return ()
+    text = _WS_RE.sub(" ", path.read_text(encoding="utf-8")).strip()
+    return tuple(_SENTENCE_SPLIT_RE.split(text))
+
+
+@lru_cache(maxsize=None)
+def _passage_starts(book: str, n: int) -> tuple[int, ...]:
+    sentences = _all_sentences(book)
+    ok = [2 <= len(s) <= MAX_SENTENCE_LEN for s in sentences]
+    return tuple(i for i in range(len(sentences) - n + 1) if all(ok[i:i + n]))
+
+
+def _read_sentences(book: str) -> list[str]:
+    return [s for s in _all_sentences(book) if MIN_SENTENCE_LEN <= len(s) <= MAX_SENTENCE_LEN]
 
 
 def sample_sentence(book: str | None = None) -> tuple[str, str] | None:
@@ -56,12 +68,9 @@ def sample_passage(
         book = random.choice(books)
     if book not in books:
         return None
-    path = BOOKS_DIR / f"{book}.txt"
-    text = _WS_RE.sub(" ", path.read_text(encoding="utf-8")).strip()
-    sentences = _SENTENCE_SPLIT_RE.split(text)
+    sentences = _all_sentences(book)
     n = random.randint(n_min, n_max)
-    ok = [2 <= len(s) <= MAX_SENTENCE_LEN for s in sentences]
-    starts = [i for i in range(len(sentences) - n + 1) if all(ok[i:i + n])]
+    starts = _passage_starts(book, n)
     if not starts:
         return None
     i = random.choice(starts)

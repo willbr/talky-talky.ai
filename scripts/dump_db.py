@@ -33,7 +33,7 @@ def main() -> None:
                   f"  words={len(segs['words'])} phonemes={len(segs['phonemes'])}"
                   f"  {s['text'][:60]}")
 
-    for kind in ("word", "phoneme"):
+    for kind in ("word", "phoneme", "diphone"):
         rows = [u for u in units if u["kind"] == kind]
         labels = sorted({u["label"] for u in rows})
         print(f"\n{kind}s ({len(labels)} labels, {len(rows)} copies)")

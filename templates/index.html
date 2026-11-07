@@ -26,6 +26,7 @@
         <select id="book-length" title="How much text to pick">
           <option value="sentence">sentence</option>
           <option value="passage">passage</option>
+          <option value="coverage">passage, fills gaps</option>
         </select>
         <button id="pick-sentence-btn" class="secondary">🎲 Pick</button>
       </div>
@@ -66,7 +67,7 @@
         <button id="compare-btn" class="secondary">Compare</button>
         <label class="phonemes-only">
           <input type="checkbox" id="phonemes-only-toggle">
-          Phonemes only
+          No word copies
         </label>
       </div>
       <audio id="output" controls></audio>
@@ -80,7 +81,7 @@
           </div>
         </div>
         <div class="compare-row">
-          <span class="compare-label">Phonemes only</span>
+          <span class="compare-label">No word copies</span>
           <div class="compare-audio-stack">
             <audio id="compare-output-phonemes" controls></audio>
             <canvas id="compare-output-phonemes-spec" class="spectrogram" height="150"></canvas>
@@ -94,6 +95,7 @@
           <canvas id="reference-output-spec" class="spectrogram" height="150"></canvas>
         </div>
       </div>
+      <p id="diphone-stats" class="hint" hidden></p>
       <div id="rendered-words" aria-live="polite"></div>
       <div id="skipped-list" aria-live="polite"></div>
 

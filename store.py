@@ -24,18 +24,18 @@ log = logging.getLogger("store")
 
 DB_FILENAME = "talky.db"
 AUDIO_SUBDIR = "audio"
-KINDS = ("word", "phoneme")
+KINDS = ("word", "phoneme", "diphone")
 SOURCES = ("isolated", "word", "sentence")
 POSITIONS = ("mid", "comma", "final")
 STATUSES = ("proposed", "saved", "excluded")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ID_FORMAT = "%Y%m%dT%H%M%S%f"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS units (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('word','phoneme')),
+  kind TEXT NOT NULL CHECK (kind IN ('word','phoneme','diphone')),
   label TEXT NOT NULL,
   wav_path TEXT NOT NULL,
   duration_ms INTEGER NOT NULL,
@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS units (
   prev TEXT,
   next TEXT,
   position TEXT CHECK (position IN ('mid','comma','final')),
-  source_sentence_idx INTEGER
+  source_sentence_idx INTEGER,
+  boundary_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS units_kind_label ON units(kind, label);
 CREATE INDEX IF NOT EXISTS units_source_recording ON units(source_recording_id, source_sentence_idx);
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS alignment_segments (
 UNIT_FIELDS = (
     "id", "kind", "label", "source", "source_unit_id", "source_recording_id",
     "source_sentence_idx", "source_word", "prev", "next", "position", "duration_ms",
+    "boundary_ms",
 )
 
 _warned_missing: set[str] = set()
@@ -110,10 +112,36 @@ def _upgrade_v1_to_v2(conn: sqlite3.Connection) -> None:
     log.info("store: upgraded database schema v1 -> v2")
 
 
+_V3_COLUMNS = (
+    "id, kind, label, wav_path, duration_ms, source, source_unit_id, source_recording_id,"
+    " source_word, prev, next, position, source_sentence_idx"
+)
+
+
+def _upgrade_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """v2 → v3: units may be diphones and carry `boundary_ms`. SQLite can't
+    alter a CHECK constraint, so `units` is rebuilt from the current DDL."""
+    units_ddl = SCHEMA[SCHEMA.index("CREATE TABLE IF NOT EXISTS units"):]
+    units_ddl = units_ddl[:units_ddl.index(");") + 2].replace(
+        "CREATE TABLE IF NOT EXISTS units", "CREATE TABLE units_v3")
+    conn.executescript(f"""
+        DROP TABLE IF EXISTS units_v3;
+        {units_ddl}
+        INSERT INTO units_v3 ({_V3_COLUMNS}) SELECT {_V3_COLUMNS} FROM units;
+        DROP TABLE units;
+        ALTER TABLE units_v3 RENAME TO units;
+        UPDATE schema_version SET version = 3;
+    """)
+    log.info("store: upgraded database schema v2 -> v3")
+
+
 def create_schema(conn: sqlite3.Connection) -> None:
     version = _schema_version(conn)
     if version == 1:
         _upgrade_v1_to_v2(conn)
+        version = 2
+    if version == 2:
+        _upgrade_v2_to_v3(conn)
     conn.executescript(SCHEMA)
     if version is None:
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
@@ -218,7 +246,7 @@ def write_unit_wav(wav_bytes: bytes) -> str:
 def canonical_label(kind: str, label: str) -> str:
     if kind == "word":
         return inventory.normalise(label)
-    if kind == "phoneme":
+    if kind in ("phoneme", "diphone"):
         return label.strip().upper()
     raise ValueError(f"unknown kind: {kind!r}")
 
@@ -229,9 +257,10 @@ def unit_path(unit_id: str) -> Path:
 
 _INSERT_UNIT = (
     "INSERT INTO units (id, kind, label, wav_path, duration_ms, source, source_unit_id,"
-    " source_recording_id, source_sentence_idx, source_word, prev, next, position)"
+    " source_recording_id, source_sentence_idx, source_word, prev, next, position, boundary_ms)"
     " VALUES (:id, :kind, :label, :wav_path, :duration_ms, :source, :source_unit_id,"
-    " :source_recording_id, :source_sentence_idx, :source_word, :prev, :next, :position)"
+    " :source_recording_id, :source_sentence_idx, :source_word, :prev, :next, :position,"
+    " :boundary_ms)"
 )
 
 
@@ -244,7 +273,7 @@ def _unit_row(uid: str, kind: str, label: str, duration_ms: int, **fields) -> di
         raise ValueError(f"unknown position: {position!r}")
     row = {k: fields.get(k) for k in (
         "source", "source_unit_id", "source_recording_id", "source_sentence_idx",
-        "source_word", "prev", "next", "position")}
+        "source_word", "prev", "next", "position", "boundary_ms")}
     row.update(id=uid, kind=kind, label=canonical_label(kind, label),
                wav_path=_rel(unit_path(uid)), duration_ms=duration_ms)
     return row

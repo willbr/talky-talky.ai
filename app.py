@@ -12,6 +12,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 import align
 import audio
 import books
+import diphones
 import extraction
 import inventory
 import phonemes
@@ -152,7 +153,8 @@ def create_app() -> Flask:
 
     @flask_app.route("/api/inventory")
     def api_inventory():
-        return jsonify({"words": store.list_labels("word")})
+        return jsonify({"words": store.list_labels("word"),
+                        "diphones": len(store.list_labels("diphone"))})
 
     @flask_app.route("/api/record", methods=["POST"])
     def api_record():
@@ -556,9 +558,9 @@ def create_app() -> Flask:
 
         rows: list[dict] = []
 
-        def harvest(kind, label, s, e, **ctx):
+        def harvest(kind, label, s, e, min_samples=min_n, **ctx):
             clip = _clip(samples, s, e, gain)
-            if len(clip) < min_n:
+            if len(clip) < min_samples:
                 return
             uid = store.write_unit_wav(audio.encode_wav(clip))
             rows.append(store.unit_row_for(uid, kind, label, int(len(clip) * 1000 / audio.SAMPLE_RATE),
@@ -573,6 +575,12 @@ def create_app() -> Flask:
             for (ph, prev_ph, next_ph), p in zip(synth.phoneme_neighbours(tc), by_word.get(wi, [])):
                 harvest("phoneme", ph, p["start_ms"], p["end_ms"], prev=prev_ph, next=next_ph,
                         source_word=tc.token)
+        min_di = int(audio.SAMPLE_RATE * diphones.MIN_MS / 1000)
+        for c in diphones.cuts(tcs, phs):
+            s, e = max(0, c["start_ms"]), min(dur, c["end_ms"])
+            harvest("diphone", c["label"], s, e, min_samples=min_di, prev=c["prev"], next=c["next"],
+                    source_word=c["source_word"],
+                    boundary_ms=int(round(c["boundary_ms"] - (s - c["start_ms"]))))
 
         seg_words = [{"idx": i, "label": w["label"], "start_ms": w["start_ms"], "end_ms": w["end_ms"],
                       "parent_idx": idx, "edited": bool(w.get("edited"))} for i, w in enumerate(words)]
@@ -630,6 +638,13 @@ def create_app() -> Flask:
     @flask_app.route("/api/books/sample", methods=["POST"])
     def api_books_sample():
         data = request.get_json(silent=True) or {}
+        if data.get("length") == "coverage":
+            have = set(store.list_labels("diphone"))
+            got = diphones.pick_for_coverage(data.get("book"), have)
+            if got is None:
+                return jsonify({"error": "no passage available"}), 404
+            return jsonify({"book": got["book"], "sentence": got["passage"],
+                            "new_diphones": got["new_diphones"], "have": got["have"]}), 200
         if data.get("length") == "passage":
             result = books.sample_passage(data.get("book"))
         else:
@@ -649,7 +664,7 @@ def create_app() -> Flask:
             return jsonify({"error": "sentence is empty"}), 400
         phonemes_only = bool(data.get("phonemes_only", False))
 
-        wav_bytes, skipped, units = synth.synthesise(sentence, phonemes_only=phonemes_only)
+        wav_bytes, skipped, units, diphone_stats = synth.synthesise(sentence, phonemes_only=phonemes_only)
         spec_payload = None
         if wav_bytes is not None:
             samples, _ = audio.read_wav(io.BytesIO(wav_bytes))
@@ -661,6 +676,7 @@ def create_app() -> Flask:
             "audio": base64.b64encode(wav_bytes).decode("ascii") if wav_bytes else None,
             "skipped": skipped,
             "units": units,
+            "diphones": diphone_stats,
             "spectrogram": spec_payload,
         }), 200
 

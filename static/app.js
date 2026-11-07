@@ -29,6 +29,7 @@ const els = {
   pickSentenceBtn: document.getElementById('pick-sentence-btn'),
   phonemesOnlyToggle: document.getElementById('phonemes-only-toggle'),
   renderedWords: document.getElementById('rendered-words'),
+  diphoneStats: document.getElementById('diphone-stats'),
   compareBtn: document.getElementById('compare-btn'),
   compareOutput: document.getElementById('compare-output'),
   compareOutputNormal: document.getElementById('compare-output-normal'),
@@ -48,12 +49,14 @@ els.phonemesOnlyToggle.addEventListener('change', () => {
 });
 
 let wordCount = 0;
+let diphoneCount = 0;
 let recordedPhonemeCount = 0;
 let totalPhonemeCount = 0;
 
 function updateStatusStrip() {
   els.statusStrip.textContent =
-    `${wordCount} word${wordCount === 1 ? '' : 's'} · ${recordedPhonemeCount}/${totalPhonemeCount} phonemes`;
+    `${wordCount} word${wordCount === 1 ? '' : 's'} · ${recordedPhonemeCount}/${totalPhonemeCount} phonemes`
+    + ` · ${diphoneCount} diphone${diphoneCount === 1 ? '' : 's'}`;
 }
 
 function activateTab(tabId) {
@@ -171,8 +174,9 @@ async function refreshInventory() {
 
 async function refreshWordInventory() {
   const r = await fetch('/api/inventory');
-  const { words } = await r.json();
+  const { words, diphones } = await r.json();
   wordCount = words.length;
+  diphoneCount = diphones || 0;
   updateStatusStrip();
   els.inventoryChips.innerHTML = '';
   for (const w of words) {
@@ -520,6 +524,7 @@ async function synthesise() {
     return;
   }
   const { audio: b64, skipped, units, spectrogram } = result;
+  showDiphoneStats([['', result.diphones]]);
 
   setAudioFromBase64(els.output, b64);
   drawSpectrogram(els.outputSpec, els.output, spectrogram, units);
@@ -530,6 +535,20 @@ async function synthesise() {
   renderRenderedWords(units);
   renderSkipped(skipped);
   renderReferenceForSentence(sentence);
+}
+
+// "Joins: 12 of 30 from real diphones" — how much of the sub-word audio
+// came from recorded transitions rather than glued phoneme halves.
+function showDiphoneStats(rows) {
+  const parts = [];
+  for (const [name, d] of rows) {
+    if (!d) continue;
+    const total = d.real + d.fallback;
+    if (!total) continue;
+    parts.push(`${name}${d.real} of ${total} joins from recorded diphones`);
+  }
+  els.diphoneStats.textContent = parts.join(' · ');
+  els.diphoneStats.hidden = parts.length === 0;
 }
 
 async function compareSynth() {
@@ -554,6 +573,7 @@ async function compareSynth() {
     return;
   }
 
+  showDiphoneStats([['Normal: ', normal.diphones], ['No word copies: ', phonemes.diphones]]);
   setAudioFromBase64(els.compareOutputNormal, normal.audio);
   setAudioFromBase64(els.compareOutputPhonemes, phonemes.audio);
   drawSpectrogram(els.compareOutputNormalSpec, els.compareOutputNormal, normal.spectrogram, normal.units);
@@ -826,10 +846,14 @@ els.pickSentenceBtn.addEventListener('click', async () => {
     body: JSON.stringify({ book: els.bookSelect.value, length: els.bookLength.value }),
   });
   if (!r.ok) return;
-  const { sentence } = await r.json();
-  els.recordText.value = sentence;
+  const picked = await r.json();
+  els.recordText.value = picked.sentence;
   disarmPhoneme();
   updateTakeHint();
+  if (picked.new_diphones !== undefined) {
+    setStatus(`this passage adds ${picked.new_diphones} diphone${picked.new_diphones === 1 ? '' : 's'}`
+      + ` you don't have yet (you have ${picked.have})`);
+  }
 });
 
 // The Speak box always starts with a sentence: the most recent reference
