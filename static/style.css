@@ -497,3 +497,11 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
 }
 #splitter .splitter-zoom-label { color: var(--fg); margin-left: 0.4rem; }
 #splitter .splitter-zoom-hint { color: var(--muted); margin-left: auto; }
+
+#record-meter { display: block; width: 100%; height: 56px; border-radius: 4px; margin-top: 0.4rem; }
+#record-meter[hidden] { display: none; }
+#record-meter-label { margin: 0.25rem 0 0 0; font-size: 0.85em; color: var(--muted); font-variant-numeric: tabular-nums; }
+#record-meter-label[data-state="live"] { color: var(--error); }
+#record-meter-label[data-state="ok"] { color: #6fcf97; }
+#record-meter-label[data-state="warn"] { color: #e8b04a; }
+#record-meter-label[data-state="bad"] { color: var(--error); font-weight: 600; }

@@ -75,6 +75,7 @@ async function loadAudio(recordingId) {
 
 function play(startMs, endMs) {
   if (!S || !S.audioBuf) return;
+  if (S.audioCtx.state !== 'running') S.audioCtx.resume();
   const src = S.audioCtx.createBufferSource();
   src.buffer = S.audioBuf;
   src.connect(S.audioCtx.destination);

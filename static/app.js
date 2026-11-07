@@ -1,4 +1,5 @@
 import { initSplitter, openSplitter, closeSplitter } from './splitter.js';
+import { initMeter, startMeter, finishMeter } from './meter.js';
 
 const SAMPLE_RATE = 22050;
 
@@ -11,6 +12,8 @@ const els = {
   saveBtn: document.getElementById('save-btn'),
   discardBtn: document.getElementById('discard-btn'),
   preview: document.getElementById('preview'),
+  recordMeter: document.getElementById('record-meter'),
+  recordMeterLabel: document.getElementById('record-meter-label'),
   recordStatus: document.getElementById('record-status'),
   inventoryChips: document.getElementById('inventory-chips'),
   sentenceInput: document.getElementById('sentence-input'),
@@ -80,11 +83,16 @@ async function ensureAudio() {
 
 async function startRecording() {
   await ensureAudio();
+  // A context created or left idle without a user gesture can sit
+  // suspended, and a suspended context captures nothing.
+  if (audioCtx.state !== 'running') await audioCtx.resume();
   mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const source = audioCtx.createMediaStreamSource(mediaStream);
   workletNode = new AudioWorkletNode(audioCtx, 'recorder-processor');
   source.connect(workletNode);
   workletNode.port.postMessage('start');
+  els.preview.removeAttribute('src');
+  startMeter(audioCtx, source, mediaStream.getAudioTracks()[0]);
   setStatus('recording…');
   setButtons({ recording: true, hasWav: false });
 }
@@ -361,10 +369,11 @@ els.recordBtn.addEventListener('click', async () => {
   if (isRecording) {
     isRecording = false;
     const floats = await stopRecording();
+    const check = finishMeter(floats);
     const int16 = floatsToInt16(floats);
     currentWavBlob = encodeWav(int16, SAMPLE_RATE);
     els.preview.src = URL.createObjectURL(currentWavBlob);
-    setStatus(`captured ${(floats.length / SAMPLE_RATE).toFixed(2)}s — review then Save`);
+    setStatus(check.message, check.verdict !== 'ok');
     setButtons({ recording: false, hasWav: true });
     return;
   }
@@ -373,7 +382,7 @@ els.recordBtn.addEventListener('click', async () => {
     isRecording = true;
   } catch (err) {
     isRecording = false;
-    setStatus('mic permission denied or unavailable', true);
+    setStatus(`mic unavailable: ${err.message || err.name}`, true);
     setButtons({ recording: false, hasWav: false });
   }
 });
@@ -840,6 +849,8 @@ async function loadDefaultSentence() {
 function ensureSentence() {
   if (!els.sentenceInput.value.trim()) els.sentenceInput.value = defaultSentence;
 }
+
+initMeter(els.recordMeter, els.recordMeterLabel);
 
 initSplitter({
   mount: els.splitterMount,
