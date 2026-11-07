@@ -1,44 +1,53 @@
-"""Resolver chain for synthesis lookups.
+"""Resolver chain for top-level synthesis tokens.
 
-Each resolver returns a `Path` to a WAV file for a given word, or `None` if
-it cannot handle the word. The synthesis loop walks `RESOLVERS` in order and
-takes the first non-None result. This is the seam for future phoneme fallback:
-add a `PhonemeResolver` to the list and synthesis loop never changes.
+Each resolver returns a unit dict (see `store.UNIT_FIELDS`) for a token, or
+None if it cannot handle it. The synthesis loop walks `RESOLVERS` in order and
+takes the first non-None result. Add new fallback strategies by appending to
+the list.
+
+`Context` carries what the synth knows about the token's surroundings so a
+resolver can pick the best of several recorded copies.
 """
 from __future__ import annotations
 
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Protocol
 
-import inventory
 import phonemes
+import store
+
+
+@dataclass(frozen=True)
+class Context:
+    prev: str | None = None       # previous word in the sentence (normalised)
+    next: str | None = None       # next word in the sentence (normalised)
+    position: str | None = None   # "mid" | "comma" | "final"
 
 
 class Resolver(Protocol):
-    def resolve(self, word: str) -> Path | None: ...
+    def resolve(self, token: str, ctx: Context) -> dict | None: ...
 
 
 class WordResolver:
-    """Resolves a word by looking up `inventory/<normalised>.wav`."""
+    """Picks the word copy whose recorded neighbours/position best match."""
 
-    def resolve(self, word: str) -> Path | None:
-        return inventory.path(word) if inventory.has(word) else None
+    def resolve(self, token: str, ctx: Context) -> dict | None:
+        return store.best_unit("word", token, prev=ctx.prev, next=ctx.next,
+                               position=ctx.position)
 
 
 class PhonemeResolver:
-    """Resolves an ARPABET phoneme token to its recorded WAV file.
+    """Resolves a raw ARPABET token (e.g. the user typed `HH`).
 
-    Returns None for any token that is not itself a valid ARPABET symbol,
-    even if a file by that name exists in the word inventory. The synthesis
-    loop is responsible for phonemising English words; this resolver only
-    handles raw phoneme symbols and so calls best_phoneme_variant without
-    any context (prev=next=None).
+    Returns None for anything that is not itself an ARPABET symbol. Phoneme
+    slots inside a phonemised word are looked up by synth directly, with
+    their neighbouring phonemes as context.
     """
 
-    def resolve(self, word: str) -> Path | None:
-        if not phonemes.is_phoneme(word):
+    def resolve(self, token: str, ctx: Context) -> dict | None:
+        if not phonemes.is_phoneme(token):
             return None
-        return inventory.best_phoneme_variant(word)
+        return store.best_unit("phoneme", token)
 
 
 RESOLVERS: list[Resolver] = [WordResolver(), PhonemeResolver()]

@@ -2,6 +2,8 @@ import pytest
 
 import inventory
 import resolver
+import store
+from resolver import Context
 
 
 @pytest.fixture
@@ -10,21 +12,36 @@ def temp_inventory(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _word(label, **kw):
+    kw.setdefault("source", "isolated")
+    return store.add_unit("word", label, b"fakewav", **kw)
+
+
+def _phoneme(symbol, **kw):
+    kw.setdefault("source", "isolated")
+    return store.add_unit("phoneme", symbol, b"fakewav", **kw)
+
+
 def test_word_resolver_hit(temp_inventory):
-    inventory.save("hello", b"fakewav")
-    r = resolver.WordResolver()
-    assert r.resolve("hello") == temp_inventory / "hello.wav"
+    uid = _word("hello")
+    assert resolver.WordResolver().resolve("hello", Context())["id"] == uid
 
 
 def test_word_resolver_miss(temp_inventory):
-    r = resolver.WordResolver()
-    assert r.resolve("missing") is None
+    assert resolver.WordResolver().resolve("missing", Context()) is None
 
 
 def test_word_resolver_normalises_input(temp_inventory):
-    inventory.save("hello", b"fakewav")
+    uid = _word("hello")
+    assert resolver.WordResolver().resolve("Hello!", Context())["id"] == uid
+
+
+def test_word_resolver_uses_context(temp_inventory):
+    contextual = _word("hello", source="sentence", next="world", position="mid")
+    isolated = _word("hello")
     r = resolver.WordResolver()
-    assert r.resolve("Hello!") == temp_inventory / "hello.wav"
+    assert r.resolve("hello", Context(next="world", position="mid"))["id"] == contextual
+    assert r.resolve("hello", Context())["id"] == isolated
 
 
 def test_resolver_chain_contains_word_resolver():
@@ -32,29 +49,24 @@ def test_resolver_chain_contains_word_resolver():
 
 
 def test_phoneme_resolver_hit(temp_inventory):
-    vid = inventory.save_variant("AA", b"fakewav", source="isolated", prev=None, next=None)
-    r = resolver.PhonemeResolver()
-    assert r.resolve("AA") == temp_inventory / "phonemes" / "aa" / f"{vid}.wav"
+    uid = _phoneme("AA")
+    assert resolver.PhonemeResolver().resolve("AA", Context())["id"] == uid
 
 
 def test_phoneme_resolver_case_insensitive(temp_inventory):
-    vid = inventory.save_variant("AA", b"fakewav", source="isolated", prev=None, next=None)
-    expected = temp_inventory / "phonemes" / "aa" / f"{vid}.wav"
+    uid = _phoneme("AA")
     r = resolver.PhonemeResolver()
-    assert r.resolve("aa") == expected
-    assert r.resolve("Aa") == expected
+    assert r.resolve("aa", Context())["id"] == uid
+    assert r.resolve("Aa", Context())["id"] == uid
 
 
 def test_phoneme_resolver_miss_no_file(temp_inventory):
-    r = resolver.PhonemeResolver()
-    assert r.resolve("AA") is None
+    assert resolver.PhonemeResolver().resolve("AA", Context()) is None
 
 
 def test_phoneme_resolver_rejects_non_arpabet(temp_inventory):
-    # Even if a file named "hello.wav" exists, PhonemeResolver does not look at words.
-    inventory.save("hello", b"fakewav")
-    r = resolver.PhonemeResolver()
-    assert r.resolve("hello") is None
+    _word("hello")
+    assert resolver.PhonemeResolver().resolve("hello", Context()) is None
 
 
 def test_resolvers_chain_order():
