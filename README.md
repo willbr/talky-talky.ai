@@ -19,16 +19,13 @@ characterful.
 Synthesis targets are drawn from public-domain books on
 [gutenberg.org](https://www.gutenberg.org):
 
-- Treasure Island
-- The Iliad — Homer
-- Alice's Adventures in Wonderland
-- The Wonderful Wizard of Oz
-- Peter Pan
-- The Wind in the Willows
-- The Wisdom of Father Brown
-- Moby Dick
+- Treasure Island — Robert Louis Stevenson
+- Alice's Adventures in Wonderland — Lewis Carroll
 - Pride and Prejudice — Jane Austen
-- Frankenstein
+- The Adventures of Tom Sawyer — Mark Twain
+- Frankenstein — Mary Shelley
+
+Fetch them into `data/books/` with `uv run python scripts/download_books.py`.
 
 The books are *what we synthesise*, not what we record. The recording inventory
 is a much smaller seed corpus designed to cover the unit set.
@@ -82,9 +79,8 @@ The ✎ icon on each word chip re-opens the editor later.
 ## todo
 
 - allow multiple copies of words
-- allow multiple copies of phonemes
-- /init
 - use https://github.com/tinygrad/tinygrad
+- vendor tinygrad inside this repo
 - use tinygrad webgpu
 - synthesize phonemes
 - text -> wav -> ai to tidy wav up -> new wav

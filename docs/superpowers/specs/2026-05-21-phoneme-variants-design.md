@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-21
 **Project:** talky-talky.ai
-**Status:** Draft, pending implementation
+**Status:** Implemented in 34a82d2
 **Builds on:**
 - [2026-05-20-phoneme-fallback-design.md](2026-05-20-phoneme-fallback-design.md)
 - [2026-05-21-phoneme-extraction-design.md](2026-05-21-phoneme-extraction-design.md)
@@ -40,7 +40,7 @@ without changing any of the recording UX upstream.
 - **Lazy legacy migration.** The first call to
   `inventory.list_variants(symbol)` moves any pre-existing flat
   `inventory/phonemes/<symbol>.wav` into the new subdir as
-  `legacy.wav` with `source="isolated"` and null neighbours. No
+  `00000000T000000000000.wav` (a sentinel ID that sorts before every real timestamp) with `source="isolated"` and null neighbours. No
   one-shot script.
 - **Selection scoring:** for each candidate variant, +1 if its `prev`
   matches the target's `prev` (including both-None), +1 if its `next`
@@ -232,7 +232,7 @@ non-recorded state). The recorded class still toggles by
   identical scoring — the newer ID wins.
 - `test_best_variant_returns_none_when_empty`: no variants → None.
 - `test_legacy_flat_file_is_migrated_once`: pre-existing
-  `inventory/phonemes/hh.wav` becomes `hh/legacy.wav` plus metadata
+  `inventory/phonemes/hh.wav` becomes `hh/00000000T000000000000.wav` plus metadata
   on first list_variants; second call sees only the new layout and
   does not re-migrate.
 
