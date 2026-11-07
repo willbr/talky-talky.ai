@@ -461,6 +461,7 @@ function setAudioFromBase64(audioEl, b64) {
 }
 
 async function synthesise() {
+  ensureSentence();
   const sentence = els.sentenceInput.value.trim();
   if (!sentence) return;
 
@@ -489,6 +490,7 @@ async function synthesise() {
 }
 
 async function compareSynth() {
+  ensureSentence();
   const sentence = els.sentenceInput.value.trim();
   if (!sentence) return;
 
@@ -833,8 +835,27 @@ els.pickSentenceBtn.addEventListener('click', async () => {
   els.sentenceInput.value = sentence;
 });
 
+// The Speak box always starts with a sentence: the most recent reference
+// recording (so synth vs. reference is one click away), else a fallback.
+const FALLBACK_SENTENCE = 'hello world';
+let defaultSentence = FALLBACK_SENTENCE;
+
+async function loadDefaultSentence() {
+  try {
+    const r = await fetch('/api/sentences');
+    const { sentences } = await r.json();
+    if (sentences.length) defaultSentence = sentences[sentences.length - 1].text;
+  } catch (e) { /* keep the fallback */ }
+  ensureSentence();
+}
+
+function ensureSentence() {
+  if (!els.sentenceInput.value.trim()) els.sentenceInput.value = defaultSentence;
+}
+
 refreshInventory();
 refreshBooks();
+loadDefaultSentence();
 setButtons({ recording: false, hasWav: false });
 
 async function openExtractEditor(word, unitId = null) {
