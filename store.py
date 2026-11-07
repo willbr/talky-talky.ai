@@ -355,6 +355,18 @@ def replace_unit_audio(unit_id: str, wav_bytes: bytes) -> int:
     return duration_ms
 
 
+def durations(kind: str, source: str) -> dict[str, list[int]]:
+    """Recorded lengths (ms) of every copy of `kind` from `source`, by label."""
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            "SELECT label, duration_ms FROM units WHERE kind = ? AND source = ?", (kind, source),
+        ).fetchall()
+    out: dict[str, list[int]] = {}
+    for r in rows:
+        out.setdefault(r["label"], []).append(r["duration_ms"])
+    return out
+
+
 def best_unit(
     kind: str,
     label: str,

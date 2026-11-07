@@ -63,7 +63,7 @@ Concatenative TTS: record short audio units, stitch them at synth time. Pre-deep
   - `pick_for_coverage`: the book passage adding the most missing diphones (Record's "passage, fills gaps")
 - `migrate.py` — one-time legacy layout → DB import
 - `phonemes.py` — canonical 39-symbol ARPABET set + CMUdict (`data/cmudict.dict`) grapheme-to-phoneme. Stress digits (`AH1`) are stripped at load time
-- `audio.py` — DSP primitives: `trim_silence`, `peak_normalise`, `apply_fade`, `concatenate` (groups), `slice_samples`, `encode_wav`
+- `audio.py` — DSP primitives: `trim_silence`, `peak_normalise`, `apply_fade`, `concatenate` (groups), `slice_samples`, `encode_wav`, `time_stretch` (WSOLA)
 - `extraction.py` — pure-math phoneme boundary proposal (RMS windowing + noise-floor threshold + ARPABET duration priors)
 - `spectrogram.py` — numpy STFT → uint8 log-magnitude grid, base64'd into `/api/synthesize` and `/api/sentence/audio` responses for canvas rendering
 - `synth.py` — `phrase_context(text)` gives each token its position, prev/next word and **cross-word** prev/next phoneme; context is None across any punctuation (`, ; : . ! ?`). Synth and the splitter's harvest both use it, so recorded and requested contexts line up. `synthesise(sentence, phonemes_only=False)` walks the resolver chain per token; words with no copy are rendered from diphones (see below). It returns `(wav, skipped, units, diphone_stats)`; each unit carries ms spans and the word copy used (`unit_id`, `source`, `source_recording_id`, `source_sentence_idx`)
@@ -95,6 +95,8 @@ Try every resolver. Word copies score +1 per matching neighbour word and +1 for 
 
 Unresolved in-dictionary words join a **run**, which ends at a copy, a skipped token or punctuation. A run is `SIL p1 … pn SIL`, filled one adjacent pair at a time:
 - the best diphone copy (`store.best_unit("diphone", "A-B", prev=, next=)`), or
-- fallback: the right half of A's phoneme copy + the left half of B's.
+- fallback: the right half of A's phoneme copy + the left half of B's. A stand-in copy (not a stop) longer than 1.3× its target is first time-compressed to it (`audio.time_stretch`, WSOLA, pitch kept). The target is the median of that phoneme's sentence copies once there are 3, else `extraction.PHONEME_DURATION_MS`, capped at 1.5× the prior.
+
+Each piece is level-matched to the one before it at the join (gain 0.5–2×, easing back to 1 across the piece, never above the −3 dB peak).
 
 Pieces are crossfaded mid-phoneme (15 ms, sliding ≤ 8 ms to the best-correlated offset). If a phoneme has no copy for a fallback, its word is skipped (the `skipped` list, red chips in the UI) and the run splits around it. Commas add 150 ms of silence, inner sentence ends 300 ms.

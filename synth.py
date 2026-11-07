@@ -7,6 +7,7 @@ import numpy as np
 
 import audio
 import diphones
+import extraction
 import inventory
 import phonemes
 import resolver
@@ -111,6 +112,50 @@ FINAL_PAUSE_MS = 300
 JOIN_OVERLAP_MS = 15      # crossfade between diphones inside a run
 JOIN_SEARCH_MS = 8        # how far the incoming piece may slide to line up in phase
 HALF_JOIN_MS = 5          # crossfade between two phoneme-copy halves (fallback)
+
+# Stand-in phoneme copies (mostly recorded in isolation) run long. Ones over
+# STRETCH_OVER x their target are time-compressed to it; stops are left as is
+# (they're short, and stretching smears the burst).
+STRETCH_OVER = 1.3
+TARGET_MIN_COPIES = 3     # sentence copies needed before their median is trusted
+TARGET_CAP = 1.5          # target never exceeds this x the built-in prior
+STOPS = frozenset({"B", "D", "G", "K", "P", "T"})
+LEVEL_MATCH_LIMITS = (0.5, 2.0)
+LEVEL_FLOOR = 300.0       # int16 RMS below which a join is too quiet to level-match
+
+
+def _target_ms(sym: str, recorded: dict[str, list[int]]) -> float:
+    prior = extraction.PHONEME_DURATION_MS.get(sym, extraction.DEFAULT_DURATION_MS)
+    lens = recorded.get(sym, [])
+    if len(lens) >= TARGET_MIN_COPIES:
+        return min(float(np.median(lens)), prior * TARGET_CAP)
+    return float(prior)
+
+
+def _fit_duration(x: np.ndarray, sym: str, recorded: dict[str, list[int]]) -> np.ndarray:
+    if sym in STOPS:
+        return x
+    target = _ms_n(_target_ms(sym, recorded))
+    if len(x) <= target * STRETCH_OVER:
+        return x
+    return audio.time_stretch(x, target)
+
+
+def _level_match(prev_tail: np.ndarray, piece: np.ndarray, n: int) -> np.ndarray:
+    """Scale `piece` so its start matches the level of `prev_tail`, easing
+    back to its own level by its end (so gains don't compound along a run)."""
+    n = min(n, len(prev_tail), len(piece))
+    if n <= 0:
+        return piece
+    a = float(np.sqrt(np.mean(prev_tail[-n:] ** 2)))
+    b = float(np.sqrt(np.mean(piece[:n] ** 2)))
+    if a < LEVEL_FLOOR or b < LEVEL_FLOOR:
+        return piece
+    g = float(np.clip(a / b, *LEVEL_MATCH_LIMITS))
+    peak = float(np.max(np.abs(piece)))
+    if g > 1 and peak > 0:
+        g = max(1.0, min(g, audio.PEAK_TARGET / peak))   # boost, but never into clipping
+    return piece * np.linspace(g, 1.0, len(piece), dtype=np.float32)
 
 
 def _ms_n(ms: float) -> int:
@@ -223,6 +268,8 @@ def synthesise(
     flush()
 
     cache: dict[str, np.ndarray] = {}
+    fitted: dict[str, np.ndarray] = {}
+    recorded_ms = store.durations("phoneme", "sentence")
 
     def read(uid: str) -> np.ndarray:
         if uid not in cache:
@@ -247,7 +294,10 @@ def synthesise(
                 if u is None:
                     raise _Missing(phones[j][0])
                 copies[j] = u
-            return read(copies[j]["id"])
+            uid = copies[j]["id"]
+            if uid not in fitted:
+                fitted[uid] = _fit_duration(read(uid), syms[j], recorded_ms)
+            return fitted[uid]
 
         out = np.zeros(0, dtype=np.float32)
         bounds: list[int] = []        # bounds[j] = start of phone j; bounds[-1] = end
@@ -270,6 +320,7 @@ def synthesise(
             if k == 0:
                 out, at = piece, 0
             else:
+                piece = _level_match(out, piece, overlap)
                 out, at = _join(out, piece, overlap, search)
             bounds.append(max(bounds[-1] if bounds else 0, at + b_in))
             stats["real" if d is not None else "fallback"] += 1

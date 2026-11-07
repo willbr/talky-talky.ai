@@ -169,3 +169,42 @@ def slice_samples(
     if end_i <= start_i:
         return np.array([], dtype=samples.dtype)
     return samples[start_i:end_i]
+
+
+WSOLA_FRAME_MS = 20
+WSOLA_TOLERANCE_MS = 5
+
+
+def time_stretch(x: np.ndarray, out_len: int) -> np.ndarray:
+    """Change a float32 signal's length to `out_len` samples without changing
+    its pitch (WSOLA). Each 20 ms Hann frame is taken from within ±5 ms of
+    its ideal position, at the offset that best continues the previous frame,
+    so periodic sounds stay in phase. Too-short inputs are returned as is."""
+    n = int(SAMPLE_RATE * WSOLA_FRAME_MS / 1000)
+    if out_len <= 0 or len(x) < 2 * n or out_len < 2 * n:
+        return x
+    hs = n // 2
+    ha = hs * len(x) / out_len
+    tol = int(SAMPLE_RATE * WSOLA_TOLERANCE_MS / 1000)
+    win = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / n)).astype(np.float32)
+    frames = (out_len - n) // hs + 1
+    y = np.zeros(frames * hs + n, dtype=np.float32)
+    wsum = np.zeros_like(y)
+    last = len(x) - n
+    pos = 0
+    for k in range(frames):
+        if k:
+            nat = min(pos + hs, last)
+            ideal = int(round(k * ha))
+            lo, hi = max(0, ideal - tol), min(last, ideal + tol)
+            if hi > lo:
+                ref = x[nat:nat + n]
+                win_view = np.lib.stride_tricks.sliding_window_view(x[lo:hi + n], n)
+                den = np.sqrt((win_view * win_view).sum(axis=1) * float(ref @ ref)) + 1e-9
+                pos = lo + int(np.argmax((win_view @ ref) / den))
+            else:
+                pos = min(max(0, ideal), last)
+        y[k * hs:k * hs + n] += x[pos:pos + n] * win
+        wsum[k * hs:k * hs + n] += win
+    y = y / np.maximum(wsum, 1e-3)
+    return y[:out_len] if len(y) >= out_len else np.pad(y, (0, out_len - len(y)))
