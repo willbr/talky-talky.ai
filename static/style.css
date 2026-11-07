@@ -245,7 +245,16 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   background: #243027;
 }
 
-.phoneme-chip .variants-panel {
+.chip.expanded {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  flex-basis: 100%;
+  border-radius: var(--radius);
+}
+
+.variants-panel {
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
@@ -255,14 +264,14 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   width: 100%;
 }
 
-.phoneme-chip .variants-panel .variant-row {
+.variants-panel .variant-row {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   font-size: 0.8em;
 }
 
-.phoneme-chip .variants-panel .variant-meta {
+.variants-panel .variant-meta {
   flex: 1 1 auto;
   color: var(--muted);
   white-space: nowrap;
@@ -270,7 +279,7 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   text-overflow: ellipsis;
 }
 
-.phoneme-chip .variants-panel .variant-action {
+.variants-panel .variant-action {
   background: transparent;
   border: 1px solid var(--accent);
   color: var(--accent);
@@ -280,12 +289,12 @@ audio { display: block; width: 100%; margin: 0.6rem 0; height: 2.2rem; }
   cursor: pointer;
 }
 
-.phoneme-chip .variants-panel .variant-action.delete {
+.variants-panel .variant-action.delete {
   border-color: var(--error);
   color: var(--error);
 }
 
-.phoneme-chip .variants-panel .variant-empty {
+.variants-panel .variant-empty {
   color: var(--muted);
   font-style: italic;
   font-size: 0.85em;

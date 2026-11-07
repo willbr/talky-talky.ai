@@ -195,7 +195,9 @@ def create_app() -> Flask:
     def api_unit_audio(unit_id):
         if store.get_unit(unit_id) is None:
             return jsonify({"error": "unit not found"}), 404
-        return send_file(store.unit_path(unit_id), mimetype="audio/wav")
+        # Absolute path: send_file resolves relative paths against the app
+        # root, not the working directory INVENTORY_DIR is relative to.
+        return send_file(store.unit_path(unit_id).resolve(), mimetype="audio/wav")
 
     @flask_app.route("/api/units/<unit_id>", methods=["DELETE"])
     def api_unit_delete(unit_id):

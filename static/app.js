@@ -38,12 +38,6 @@ const els = {
   referenceOutputSpec: document.getElementById('reference-output-spec'),
 };
 
-const currentInventorySet = new Set();
-
-function normaliseWord(s) {
-  return s.toLowerCase().trim().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim();
-}
-
 const PHONEMES_ONLY_KEY = 'tt.phonemesOnly';
 els.phonemesOnlyToggle.checked = localStorage.getItem(PHONEMES_ONLY_KEY) === '1';
 els.phonemesOnlyToggle.addEventListener('change', () => {
@@ -173,8 +167,6 @@ async function refreshWordInventory() {
   const r = await fetch('/api/inventory');
   const { words } = await r.json();
   wordCount = words.length;
-  currentInventorySet.clear();
-  for (const w of words) currentInventorySet.add(w);
   updateStatusStrip();
   els.inventoryChips.innerHTML = '';
   for (const w of words) {
@@ -187,10 +179,10 @@ async function refreshWordInventory() {
     const edit = document.createElement('button');
     edit.className = 'chip-edit';
     edit.textContent = '✎';
-    edit.title = `Extract phonemes from "${w}"`;
-    edit.addEventListener('click', (e) => {
+    edit.title = `"${w}" copies`;
+    edit.addEventListener('click', async (e) => {
       e.stopPropagation();
-      openExtractEditor(w);
+      await toggleUnitsPanel(chip, 'word', w);
     });
     chip.appendChild(edit);
 
@@ -229,10 +221,10 @@ async function refreshPhonemeInventory() {
       const edit = document.createElement('button');
       edit.className = 'chip-edit';
       edit.textContent = '✎';
-      edit.title = `${symbol} variants`;
+      edit.title = `${symbol} copies`;
       edit.addEventListener('click', async (e) => {
         e.stopPropagation();
-        await togglePhonemeVariantsPanel(chip, symbol);
+        await toggleUnitsPanel(chip, 'phoneme', symbol);
       });
       chip.appendChild(edit);
     }
@@ -242,11 +234,27 @@ async function refreshPhonemeInventory() {
   }
 }
 
-async function togglePhonemeVariantsPanel(chip, symbol) {
-  // Remove any panel that's already on another chip so only one is open
-  // at a time.
+function describeUnit(u) {
+  const bits = [];
+  if (u.kind === 'word') {
+    bits.push(u.source === 'sentence' ? 'from sentence' : u.source);
+  } else {
+    const from = u.source_word || 'word';
+    bits.push(u.source === 'isolated' ? 'isolated' : `from "${from}"`);
+  }
+  const ctx = [];
+  if (u.prev) ctx.push(`prev=${u.prev}`);
+  if (u.next) ctx.push(`next=${u.next}`);
+  if (u.position) ctx.push(u.position);
+  if (ctx.length) bits.push(`(${ctx.join(' ')})`);
+  return `${bits.join(' ')} · ${u.duration_ms} ms`;
+}
+
+// Toggle the inline copies panel under a word or phoneme chip. Only one
+// panel is open at a time across both grids.
+async function toggleUnitsPanel(chip, kind, label) {
   const existing = chip.querySelector('.variants-panel');
-  for (const open of els.phonemeGrid.querySelectorAll('.variants-panel')) {
+  for (const open of document.querySelectorAll('.variants-panel')) {
     open.parentElement.classList.remove('expanded');
     open.remove();
   }
@@ -254,117 +262,77 @@ async function togglePhonemeVariantsPanel(chip, symbol) {
 
   let body;
   try {
-    const r = await fetch(`/api/phoneme/variants?symbol=${encodeURIComponent(symbol)}`);
+    const r = await fetch(`/api/units?kind=${kind}&label=${encodeURIComponent(label)}`);
     if (!r.ok) {
-      setStatus(`Variants: ${r.statusText}`, true);
+      setStatus(`Copies: ${r.statusText}`, true);
       return;
     }
     body = await r.json();
   } catch (e) {
-    setStatus(`Variants failed: ${e.message}`, true);
+    setStatus(`Copies failed: ${e.message}`, true);
     return;
   }
 
   chip.classList.add('expanded');
   const panel = document.createElement('div');
   panel.className = 'variants-panel';
+  panel.addEventListener('click', (e) => e.stopPropagation());
 
-  if (!body.variants.length) {
+  if (!body.units.length) {
     const empty = document.createElement('div');
     empty.className = 'variant-empty';
-    empty.textContent = 'no variants';
+    empty.textContent = 'no copies';
     panel.appendChild(empty);
     chip.appendChild(panel);
     return;
   }
 
-  for (const v of body.variants) {
+  for (const u of body.units) {
     const row = document.createElement('div');
     row.className = 'variant-row';
 
     const meta = document.createElement('span');
     meta.className = 'variant-meta';
-    const contextBits = [];
-    if (v.prev) contextBits.push(`prev=${v.prev}`);
-    if (v.next) contextBits.push(`next=${v.next}`);
-    const context = contextBits.length ? ` (${contextBits.join(' ')})` : '';
-    const sourceLabel = v.source === 'isolated' ? 'isolated' : `from "${v.source}"`;
-    meta.textContent = `${sourceLabel}${context} · ${v.duration_ms} ms`;
+    meta.textContent = describeUnit(u);
+    meta.title = `${u.id} · ${meta.textContent}`;
     row.appendChild(meta);
 
-    const playBtn = document.createElement('button');
-    playBtn.className = 'variant-action';
-    playBtn.textContent = '▶';
-    playBtn.title = 'Play';
-    playBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      playPhonemeVariant(symbol, v.id);
-    });
-    row.appendChild(playBtn);
+    const action = (text, title, cls, fn) => {
+      const b = document.createElement('button');
+      b.className = `variant-action${cls ? ' ' + cls : ''}`;
+      b.textContent = text;
+      b.title = title;
+      b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+      row.appendChild(b);
+    };
 
-    const trimBtn = document.createElement('button');
-    trimBtn.className = 'variant-action';
-    trimBtn.textContent = '✎';
-    trimBtn.title = 'Trim';
-    trimBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openPhonemeEditor(symbol, v.id);
+    action('▶', 'Play', '', () => playUnit(u.id));
+    action('✎', kind === 'word' ? 'Trim / split into phonemes' : 'Trim', '', () => {
+      if (kind === 'word') openExtractEditor(label, u.id);
+      else openPhonemeEditor(label, u.id);
     });
-    row.appendChild(trimBtn);
-
-    const delBtn = document.createElement('button');
-    delBtn.className = 'variant-action delete';
-    delBtn.textContent = '×';
-    delBtn.title = 'Delete';
-    delBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      if (!window.confirm(`Delete this ${symbol} variant?`)) return;
-      const r = await fetch(
-        `/api/phoneme/variants?symbol=${encodeURIComponent(symbol)}&id=${encodeURIComponent(v.id)}`,
-        { method: 'DELETE' },
-      );
-      if (!r.ok && r.status !== 204) {
+    action('×', 'Delete', 'delete', async () => {
+      if (!window.confirm(`Delete this copy of "${label}"?`)) return;
+      const r = await fetch(`/api/units/${encodeURIComponent(u.id)}`, { method: 'DELETE' });
+      if (!r.ok) {
         const err = await r.json().catch(() => ({}));
         setStatus(`Delete: ${err.error || r.statusText}`, true);
         return;
       }
-      await refreshPhonemeInventory();
+      await refreshInventory();
     });
-    row.appendChild(delBtn);
 
     panel.appendChild(row);
   }
   chip.appendChild(panel);
 }
 
-async function playPhonemeVariant(symbol, variantId) {
-  // Quick-fetch + decode + play. No persistent audio context needed —
-  // these are short clips.
-  let prop;
-  try {
-    const r = await fetch('/api/phoneme/propose', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol, variant_id: variantId }),
-    });
-    if (!r.ok) {
-      setStatus(`Play: ${r.statusText}`, true);
-      return;
-    }
-    prop = await r.json();
-  } catch (e) {
-    setStatus(`Play failed: ${e.message}`, true);
-    return;
-  }
-  const bin = atob(prop.audio);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
-  const buffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  src.connect(ctx.destination);
-  src.start();
+let unitPlayer = null;
+
+function playUnit(unitId) {
+  if (unitPlayer) unitPlayer.pause();
+  unitPlayer = new Audio(`/api/units/${encodeURIComponent(unitId)}/audio`);
+  unitPlayer.play().catch((e) => setStatus(`Play failed: ${e.message}`, true));
 }
 
 function armPhoneme(symbol, example) {
@@ -418,22 +386,20 @@ async function saveWord(word, blob) {
   form.append('word', word);
   form.append('audio', blob, 'audio.wav');
 
-  let r = await fetch('/api/record', { method: 'POST', body: form });
-  if (r.status === 409) {
-    if (!confirm(`"${word}" already exists. Overwrite?`)) return;
-    r = await fetch('/api/record?overwrite=true', { method: 'POST', body: form });
-  }
+  // Every save appends a new copy; nothing is ever overwritten.
+  const r = await fetch('/api/record', { method: 'POST', body: form });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
     setStatus(`save failed: ${err.error || r.statusText}`, true);
     return;
   }
-  const { word: saved } = await r.json();
+  const { word: saved, unit_id: unitId } = await r.json();
   setStatus(`saved "${saved}"`);
   els.wordInput.value = '';
 
-  // After a successful word save, automatically offer phoneme extraction.
-  openExtractEditor(saved);
+  // After a successful word save, automatically offer phoneme extraction
+  // on the copy that was just recorded.
+  openExtractEditor(saved, unitId);
 }
 
 async function savePhoneme(symbol, blob) {
@@ -441,11 +407,7 @@ async function savePhoneme(symbol, blob) {
   form.append('phoneme', symbol);
   form.append('audio', blob, 'audio.wav');
 
-  let r = await fetch('/api/record/phoneme', { method: 'POST', body: form });
-  if (r.status === 409) {
-    if (!confirm(`Phoneme ${symbol} already recorded. Overwrite?`)) return;
-    r = await fetch('/api/record/phoneme?overwrite=true', { method: 'POST', body: form });
-  }
+  const r = await fetch('/api/record/phoneme', { method: 'POST', body: form });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
     setStatus(`save failed: ${err.error || r.statusText}`, true);
@@ -521,7 +483,7 @@ async function synthesise() {
     els.output.play().catch(() => { /* user gesture is the click on synth */ });
   }
 
-  renderRenderedWords(sentence, skipped);
+  renderRenderedWords(units);
   renderSkipped(skipped);
   renderReferenceForSentence(sentence);
 }
@@ -552,11 +514,9 @@ async function compareSynth() {
   drawSpectrogram(els.compareOutputNormalSpec, els.compareOutputNormal, normal.spectrogram, normal.units);
   drawSpectrogram(els.compareOutputPhonemesSpec, els.compareOutputPhonemes, phonemes.spectrogram, phonemes.units);
 
-  // Use the normal-mode skip list for chip filtering; it represents words
-  // that simply have no source audio at all (no word recording, no phoneme
-  // fallback). Phonemes-only skips can be wider but those words still have
-  // word recordings worth editing.
-  renderRenderedWords(sentence, normal.skipped);
+  // Edit chips come from the normal-mode render: those are the word copies
+  // that were actually heard (phonemes-only mode uses none).
+  renderRenderedWords(normal.units);
   // Skip chips: union of both modes (anything that failed somewhere).
   const skippedUnion = Array.from(new Set([...normal.skipped, ...phonemes.skipped]));
   renderSkipped(skippedUnion);
@@ -703,41 +663,34 @@ function drawSpectrogram(canvas, audioEl, spec, units) {
   ctx.stroke();
 }
 
-function renderRenderedWords(sentence, skipped) {
+// One chip per word occurrence that was rendered from a word copy, in
+// sentence order. Each opens the editor on exactly the copy that was heard.
+function renderRenderedWords(units) {
   els.renderedWords.innerHTML = '';
-  const skippedSet = new Set(skipped.map(normaliseWord));
-  const seen = new Set();
-  const words = [];
-  for (const raw of sentence.split(/\s+/)) {
-    const w = normaliseWord(raw);
-    if (!w || seen.has(w) || skippedSet.has(w)) continue;
-    if (!currentInventorySet.has(w)) continue;
-    seen.add(w);
-    words.push(w);
-  }
-  if (!words.length) return;
+  const heard = (units || []).filter((u) => u.unit_id);
+  if (!heard.length) return;
 
   const label = document.createElement('span');
   label.className = 'rendered-label';
-  label.textContent = `Edit (${words.length}):`;
+  label.textContent = `Edit (${heard.length}):`;
   els.renderedWords.appendChild(label);
 
-  for (const w of words) {
+  for (const u of heard) {
     const chip = document.createElement('span');
     chip.className = 'chip rendered';
 
     const lbl = document.createElement('span');
-    lbl.textContent = w;
+    lbl.textContent = u.token;
     chip.appendChild(lbl);
 
     const edit = document.createElement('button');
     edit.className = 'chip-edit';
     edit.textContent = '✎';
-    edit.title = `Edit "${w}"`;
+    edit.title = `Edit this copy of "${u.token}"`;
     edit.addEventListener('click', (e) => {
       e.stopPropagation();
       activateTab('train-tab');
-      openExtractEditor(w);
+      openExtractEditor(u.token, u.unit_id);
     });
     chip.appendChild(edit);
 
@@ -884,7 +837,7 @@ refreshInventory();
 refreshBooks();
 setButtons({ recording: false, hasWav: false });
 
-async function openExtractEditor(word) {
+async function openExtractEditor(word, unitId = null) {
   closeExtractEditor();
 
   let prop;
@@ -892,7 +845,7 @@ async function openExtractEditor(word) {
     const r = await fetch('/api/extract/propose', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word }),
+      body: JSON.stringify(unitId ? { unit_id: unitId } : { word }),
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
@@ -908,6 +861,7 @@ async function openExtractEditor(word) {
   editor = {
     mode: 'word',
     word: prop.word,
+    unitId: prop.unit_id,
     audioBase64: prop.audio,
     audioDurationMs: prop.audio_duration_ms,
     phonemes: prop.phonemes,
@@ -929,12 +883,12 @@ async function openExtractEditor(word) {
   decodeWaveform();
 }
 
-async function openPhonemeEditor(symbol, variantId = null) {
+async function openPhonemeEditor(symbol, unitId = null) {
   closeExtractEditor();
 
   let prop;
   try {
-    const payload = variantId ? { symbol, variant_id: variantId } : { symbol };
+    const payload = unitId ? { symbol, unit_id: unitId } : { symbol };
     const r = await fetch('/api/phoneme/propose', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -957,7 +911,7 @@ async function openPhonemeEditor(symbol, variantId = null) {
   editor = {
     mode: 'phoneme',
     phonemeSymbol: prop.symbol,
-    phonemeVariantId: prop.variant_id,
+    unitId: prop.unit_id,
     phonemeExample: prop.example,
     audioBase64: prop.audio,
     audioDurationMs: prop.audio_duration_ms,
@@ -1379,10 +1333,10 @@ async function saveTrimFromEditor() {
   if (!ok) return;
 
   const endpoint = isPhoneme ? '/api/phoneme/trim' : '/api/extract/trim';
+  const unitId = editor.unitId;
   const body = isPhoneme
-    ? { symbol: label, variant_id: editor.phonemeVariantId, start_ms: start, end_ms: end }
-    : { word: label, start_ms: start, end_ms: end };
-  const variantId = editor.phonemeVariantId;
+    ? { symbol: label, unit_id: unitId, start_ms: start, end_ms: end }
+    : { unit_id: unitId, start_ms: start, end_ms: end };
 
   let r;
   try {
@@ -1404,9 +1358,9 @@ async function saveTrimFromEditor() {
   setStatus(`Trimmed ${label} → ${duration_ms} ms`);
   closeExtractEditor();
   if (isPhoneme) {
-    await openPhonemeEditor(label, variantId);
+    await openPhonemeEditor(label, unitId);
   } else {
-    await openExtractEditor(label);
+    await openExtractEditor(label, unitId);
   }
 }
 
@@ -1435,7 +1389,6 @@ async function playSlice(startMs, endMs) {
 
 async function savePhonemesFromEditor() {
   if (!editor) return;
-  const word = editor.word;
   const spans = editor.phonemeSpansMs.map((s) => ({ start_ms: s.start_ms, end_ms: s.end_ms }));
   const checkboxes = editor.container.querySelectorAll('.row input[type=checkbox]');
   const saveFlags = Array.from(checkboxes).map((cb) => cb.checked);
@@ -1445,7 +1398,7 @@ async function savePhonemesFromEditor() {
     r = await fetch('/api/extract/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word, spans, save: saveFlags }),
+      body: JSON.stringify({ unit_id: editor.unitId, spans, save: saveFlags }),
     });
   } catch (e) {
     setStatus(`Save phonemes failed: ${e.message}`, true);
