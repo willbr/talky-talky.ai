@@ -43,3 +43,26 @@ def sample_sentence(book: str | None = None) -> tuple[str, str] | None:
     if not sentences:
         return None
     return book, random.choice(sentences)
+
+
+def sample_passage(
+    book: str | None = None, n_min: int = 3, n_max: int = 5,
+) -> tuple[str, str] | None:
+    """Return (book, passage) of n_min..n_max consecutive sentences, or None."""
+    books = list_books()
+    if not books:
+        return None
+    if not book or book == "any":
+        book = random.choice(books)
+    if book not in books:
+        return None
+    path = BOOKS_DIR / f"{book}.txt"
+    text = _WS_RE.sub(" ", path.read_text(encoding="utf-8")).strip()
+    sentences = _SENTENCE_SPLIT_RE.split(text)
+    n = random.randint(n_min, n_max)
+    ok = [2 <= len(s) <= MAX_SENTENCE_LEN for s in sentences]
+    starts = [i for i in range(len(sentences) - n + 1) if all(ok[i:i + n])]
+    if not starts:
+        return None
+    i = random.choice(starts)
+    return book, " ".join(sentences[i:i + n])

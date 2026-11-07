@@ -9,6 +9,7 @@ import wave
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
+import align
 import audio
 import books
 import extraction
@@ -65,33 +66,50 @@ def _spectrogram_payload(samples: np.ndarray) -> dict:
     }
 
 
+def _sentence_copy_conflict(unit: dict):
+    """Copies cut from a recording are edited in the splitter, never trimmed
+    or split directly: a re-save of the sentence would overwrite or orphan
+    the edit."""
+    return (jsonify({"error": "sentence copy",
+                     "recording_id": unit["source_recording_id"],
+                     "sentence_idx": unit["source_sentence_idx"]}), 409)
+
+
+def _editable(units: list[dict]) -> list[dict]:
+    return [u for u in units if u["source"] != "sentence"]
+
+
 def _word_unit(data: dict):
     """Resolve the word copy a request targets: `unit_id` if given, else the
-    most recent copy of `word`. Returns (unit, None) or (None, error)."""
+    most recent editable (non-sentence) copy of `word`."""
     unit_id = data.get("unit_id")
     if unit_id is not None:
         unit = store.get_unit(unit_id)
         if unit is None or unit["kind"] != "word":
             return None, (jsonify({"error": "unit not found", "unit_id": unit_id}), 404)
+        if unit["source"] == "sentence":
+            return None, _sentence_copy_conflict(unit)
         return unit, None
     word = inventory.normalise(str(data.get("word", "")))
     if not word:
         return None, (jsonify({"error": "word is required"}), 400)
-    units = store.list_units("word", word)
+    units = _editable(store.list_units("word", word))
     if not units:
         return None, (jsonify({"error": "word not recorded", "word": word}), 404)
     return units[-1], None
 
 
 def _phoneme_unit(symbol: str, unit_id):
-    """Resolve the phoneme copy a request targets (most recent by default)."""
+    """Resolve the phoneme copy a request targets (most recent editable copy by default)."""
     if unit_id is not None:
         unit = store.get_unit(unit_id)
         if unit is None or unit["kind"] != "phoneme" or unit["label"] != symbol:
             return None, (jsonify({"error": "unit not found", "symbol": symbol,
                                    "unit_id": unit_id}), 404)
+        if unit["source"] == "sentence":
+            return None, _sentence_copy_conflict(unit)
         return unit, None
-    units = store.list_units("phoneme", symbol)
+    units = _editable(store.list_units("phoneme", symbol))
     if not units:
         return None, (jsonify({"error": "phoneme not recorded", "symbol": symbol}), 404)
     return units[-1], None
@@ -359,39 +377,209 @@ def create_app() -> Flask:
         log.info("phoneme/trim: symbol=%r unit=%s -> %dms", symbol, unit["id"], duration_ms)
         return jsonify({"symbol": symbol, "unit_id": unit["id"], "duration_ms": duration_ms}), 200
 
-    # --- reference sentences -------------------------------------------------------
+    # --- recordings & splitter ----------------------------------------------------
 
-    @flask_app.route("/api/sentence/record", methods=["POST"])
-    def api_sentence_record():
-        sentence = request.form.get("sentence", "").strip()
-        if not sentence:
-            return jsonify({"error": "sentence is required"}), 400
-        samples, err = _read_upload_wav(request.files.get("audio"), "sentence/record")
+    def _ensure_sentences(rec: dict) -> list[dict]:
+        """Sentence-tier rows for a recording, proposing them on first use
+        (older recordings predate the splitter)."""
+        sents = store.get_sentences(rec["id"])
+        if sents:
+            return sents
+        texts = align.split_text_sentences(rec["text"]) or [rec["text"]]
+        samples, _ = audio.read_wav(store.recording_path(rec["id"]))
+        spans = align.propose_sentence_spans(samples, texts)
+        store.set_sentences(rec["id"], [
+            {"idx": i, "label": t, "start_ms": s, "end_ms": e}
+            for i, (t, (s, e)) in enumerate(zip(texts, spans))
+        ])
+        return store.get_sentences(rec["id"])
+
+    def _recording_and_sentence(rec_id: str, idx: int):
+        rec = store.get_recording(rec_id)
+        if rec is None:
+            return None, None, (jsonify({"error": "recording not found"}), 404)
+        sents = _ensure_sentences(rec)
+        if not 0 <= idx < len(sents):
+            return None, None, (jsonify({"error": "sentence not found"}), 404)
+        return rec, sents[idx], None
+
+    def _takes(text: str) -> list[str]:
+        needle = inventory.normalise(text)
+        return [r["id"] for r in store.list_recordings() if inventory.normalise(r["text"]) == needle]
+
+    @flask_app.route("/api/recordings", methods=["POST"])
+    def api_recordings_create():
+        text = request.form.get("text", "").strip()
+        if not synth.tokenise(text):
+            return jsonify({"error": "text is required"}), 400
+        samples, err = _read_upload_wav(request.files.get("audio"), "recordings")
         if err:
             return err
-        # Saved untrimmed and un-normalised: references are raw training data.
-        sid = store.save_sentence(sentence, audio.encode_wav(samples))
-        log.info("sentence/record: saved id=%s text=%r", sid, sentence)
-        return jsonify({"id": sid}), 200
+        if len(samples) < int(audio.SAMPLE_RATE * audio.MIN_LENGTH_SECONDS):
+            return jsonify({"error": "recording too short"}), 400
+        # Saved raw: recordings are training data; copies get one gain per take.
+        rec_id = store.save_recording(text, audio.encode_wav(samples))
+        sents = _ensure_sentences(store.get_recording(rec_id))
+        log.info("recordings: saved %s (%d sentences) %r", rec_id, len(sents), text[:80])
+        return jsonify({"id": rec_id, "sentences": sents}), 200
 
-    @flask_app.route("/api/sentences")
-    def api_sentences():
-        return jsonify({"sentences": store.list_sentences()})
+    @flask_app.route("/api/recordings/find")
+    def api_recordings_find():
+        return jsonify({"matches": store.find_recordings(request.args.get("text", ""))})
+
+    @flask_app.route("/api/recordings/<rec_id>")
+    def api_recording(rec_id):
+        rec = store.get_recording(rec_id)
+        if rec is None:
+            return jsonify({"error": "recording not found"}), 404
+        return jsonify({**rec, "sentences": _ensure_sentences(rec), "takes": _takes(rec["text"])})
+
+    @flask_app.route("/api/recordings/<rec_id>/audio")
+    def api_recording_audio(rec_id):
+        if store.get_recording(rec_id) is None:
+            return jsonify({"error": "recording not found"}), 404
+        return send_file(store.recording_path(rec_id).resolve(), mimetype="audio/wav")
+
+    def _with_dict_flags(words: list[dict], text: str) -> list[dict]:
+        tcs = synth.phrase_context(text)
+        for w in words:
+            i = w["idx"]
+            w["in_dict"] = i < len(tcs) and tcs[i].phonemes is not None
+        return words
+
+    @flask_app.route("/api/recordings/<rec_id>/sentences/<int:idx>/propose", methods=["POST"])
+    def api_sentence_propose(rec_id, idx):
+        rec, sent, err = _recording_and_sentence(rec_id, idx)
+        if err:
+            return err
+        data = request.get_json(silent=True) or {}
+        pins = data.get("pins") or []
+        if not isinstance(pins, list):
+            return jsonify({"error": "pins must be a list"}), 400
+        text = data.get("text")
+        if isinstance(text, str) and text.strip() and text.strip() != sent["text"]:
+            if not synth.tokenise(text):
+                return jsonify({"error": "text has no words"}), 400
+            store.update_sentence(rec_id, idx, text=text.strip())
+            sent["text"] = text.strip()
+            text_changed = True
+        else:
+            text_changed = False
+
+        samples, _ = audio.read_wav(store.recording_path(rec_id))
+        if sent["status"] == "saved" and not pins and not text_changed and not data.get("fresh"):
+            segs = store.get_segments(rec_id, idx)
+            words, phs = _with_dict_flags(segs["words"], sent["text"]), segs["phonemes"]
+            span = [words[0]["start_ms"], words[-1]["end_ms"]] if words else [sent["start_ms"], sent["end_ms"]]
+        else:
+            ref = align.build_reference(
+                sent["text"],
+                exclude=lambda u: u["source_recording_id"] == rec_id and u["source_sentence_idx"] == idx,
+            )
+            out = align.propose(samples, (sent["start_ms"], sent["end_ms"]), ref, pins)
+            words, phs, span = out["words"], out["phonemes"], out["span_ms"]
+
+        dur = rec["duration_ms"]
+        view = [max(0, span[0] - 300), min(dur, span[1] + 300)]
+        clip = samples[int(view[0] * audio.SAMPLE_RATE / 1000): int(view[1] * audio.SAMPLE_RATE / 1000)]
+        return jsonify({"sentence": sent, "words": words, "phonemes": phs,
+                        "view_ms": view, "spectrogram": _spectrogram_payload(clip)})
+
+    def _clip(samples: np.ndarray, start_ms: int, end_ms: int, gain: float) -> np.ndarray:
+        part = audio.slice_samples(samples, int(start_ms), int(end_ms)).astype(np.float32) * gain
+        return part.clip(-32768, 32767).astype(np.int16)
+
+    @flask_app.route("/api/recordings/<rec_id>/sentences/<int:idx>/save", methods=["POST"])
+    def api_sentence_save(rec_id, idx):
+        rec, sent, err = _recording_and_sentence(rec_id, idx)
+        if err:
+            return err
+        data = request.get_json(silent=True) or {}
+        words, phs = data.get("words"), data.get("phonemes")
+        if not isinstance(words, list) or not isinstance(phs, list) or not words:
+            return jsonify({"error": "words and phonemes are required"}), 400
+
+        tcs = synth.phrase_context(sent["text"])
+        if [w.get("label") for w in words] != [tc.token for tc in tcs]:
+            return jsonify({"error": "words do not match the sentence text"}), 400
+        expected_phs = [(wi, ph) for wi, tc in enumerate(tcs) for ph in (tc.phonemes or [])]
+        if [(p.get("parent_idx"), p.get("label")) for p in phs] != expected_phs:
+            return jsonify({"error": "phonemes do not match the sentence text"}), 400
+        dur = rec["duration_ms"]
+        for seg in words + phs:
+            s, e = seg.get("start_ms"), seg.get("end_ms")
+            if not isinstance(s, (int, float)) or not isinstance(e, (int, float)) or not 0 <= s < e <= dur + 5:
+                return jsonify({"error": "segment times out of range", "segment": seg}), 400
+
+        samples, _ = audio.read_wav(store.recording_path(rec_id))
+        peak = int(np.max(np.abs(samples))) if len(samples) else 0
+        gain = audio.PEAK_TARGET / peak if peak else 1.0
+        min_n = int(audio.SAMPLE_RATE * PHONEME_MIN_SLICE_SECONDS)
+        src = {"source": "sentence", "source_recording_id": rec_id, "source_sentence_idx": idx}
+
+        rows: list[dict] = []
+
+        def harvest(kind, label, s, e, **ctx):
+            clip = _clip(samples, s, e, gain)
+            if len(clip) < min_n:
+                return
+            uid = store.write_unit_wav(audio.encode_wav(clip))
+            rows.append(store.unit_row_for(uid, kind, label, int(len(clip) * 1000 / audio.SAMPLE_RATE),
+                                           **src, **ctx))
+
+        by_word: dict[int, list[dict]] = {}
+        for p in phs:
+            by_word.setdefault(p["parent_idx"], []).append(p)
+        for wi, (tc, w) in enumerate(zip(tcs, words)):
+            harvest("word", tc.token, w["start_ms"], w["end_ms"],
+                    prev=tc.prev_word, next=tc.next_word, position=tc.position)
+            for (ph, prev_ph, next_ph), p in zip(synth.phoneme_neighbours(tc), by_word.get(wi, [])):
+                harvest("phoneme", ph, p["start_ms"], p["end_ms"], prev=prev_ph, next=next_ph,
+                        source_word=tc.token)
+
+        seg_words = [{"idx": i, "label": w["label"], "start_ms": w["start_ms"], "end_ms": w["end_ms"],
+                      "parent_idx": idx, "edited": bool(w.get("edited"))} for i, w in enumerate(words)]
+        seg_phs = [{"idx": i, "label": p["label"], "start_ms": p["start_ms"], "end_ms": p["end_ms"],
+                    "parent_idx": p["parent_idx"], "edited": bool(p.get("edited"))} for i, p in enumerate(phs)]
+        ids = store.replace_sentence(rec_id, idx, words=seg_words, phonemes=seg_phs, units=rows)
+        log.info("splitter: saved %s#%d -> %d copies", rec_id, idx, len(ids))
+        return jsonify({"saved_units": len(ids), "sentence": store.get_sentences(rec_id)[idx]})
+
+    @flask_app.route("/api/recordings/<rec_id>/sentences/<int:idx>/exclude", methods=["POST"])
+    def api_sentence_exclude(rec_id, idx):
+        rec, sent, err = _recording_and_sentence(rec_id, idx)
+        if err:
+            return err
+        excluded = bool((request.get_json(silent=True) or {}).get("excluded", True))
+        if excluded:
+            n = store.clear_sentence_copies(rec_id, idx)
+            store.update_sentence(rec_id, idx, status="excluded")
+            log.info("splitter: excluded %s#%d (removed %d copies)", rec_id, idx, n)
+        else:
+            store.update_sentence(rec_id, idx, status="proposed")
+        return jsonify({"sentence": store.get_sentences(rec_id)[idx]})
 
     @flask_app.route("/api/sentence/audio", methods=["POST"])
     def api_sentence_audio():
+        """Reference for Speak: the newest recording whose text, or one of
+        whose sentences, matches. An inner sentence returns just its span."""
         data = request.get_json(silent=True) or {}
         sentence = data.get("sentence")
         if not isinstance(sentence, str) or not sentence.strip():
             return jsonify({"error": "sentence is required"}), 400
-        wav_path = store.find_sentence_by_text(sentence)
-        if wav_path is None:
+        matches = store.find_recordings(sentence)
+        if not matches:
             return jsonify({"found": False}), 200
-        samples, _ = audio.read_wav(wav_path)
+        m = matches[0]
+        samples, _ = audio.read_wav(store.recording_path(m["recording_id"]))
+        if m["sentence_idx"] is not None:
+            s = store.get_sentences(m["recording_id"])[m["sentence_idx"]]
+            samples = audio.slice_samples(samples, s["start_ms"], s["end_ms"])
         return jsonify({
             "found": True,
-            "id": wav_path.stem,
-            "audio": base64.b64encode(wav_path.read_bytes()).decode("ascii"),
+            "id": m["recording_id"],
+            "sentence_idx": m["sentence_idx"],
+            "audio": base64.b64encode(audio.encode_wav(samples)).decode("ascii"),
             "audio_duration_ms": _duration_ms(samples),
             "spectrogram": _spectrogram_payload(samples),
         }), 200
@@ -405,7 +593,10 @@ def create_app() -> Flask:
     @flask_app.route("/api/books/sample", methods=["POST"])
     def api_books_sample():
         data = request.get_json(silent=True) or {}
-        result = books.sample_sentence(data.get("book"))
+        if data.get("length") == "passage":
+            result = books.sample_passage(data.get("book"))
+        else:
+            result = books.sample_sentence(data.get("book"))
         if result is None:
             return jsonify({"error": "no sentence available"}), 404
         book, sentence = result
