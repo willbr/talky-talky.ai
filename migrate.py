@@ -76,7 +76,7 @@ def migrate(conn: sqlite3.Connection, inventory_dir: Path) -> tuple[dict[str, in
         rel = copy_in(src, uid)
         conn.execute(
             "INSERT INTO units (id, kind, label, wav_path, duration_ms, source,"
-            " source_unit_id, source_sentence_id, source_word, prev, next, position)"
+            " source_unit_id, source_recording_id, source_word, prev, next, position)"
             " VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, NULL)",
             (uid, kind, label, rel, _duration_ms(src), fields.get("source", "isolated"),
              fields.get("source_word"), fields.get("prev"), fields.get("next")),
@@ -99,7 +99,7 @@ def migrate(conn: sqlite3.Connection, inventory_dir: Path) -> tuple[dict[str, in
             reserved.add(sid)
             rel = copy_in(wav, sid)
             conn.execute(
-                "INSERT INTO sentences (id, text, wav_path, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO recordings (id, text, wav_path, created_at) VALUES (?, ?, ?, ?)",
                 (sid, txt.read_text(encoding="utf-8"), rel, created.isoformat()),
             )
             originals += [wav, txt]
