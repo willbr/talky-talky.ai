@@ -43,6 +43,13 @@ def list_words() -> list[str]:
 
 PHONEME_SUBDIR = "phonemes"
 LEGACY_VARIANT_ID = "00000000T000000000000"
+# Variant IDs are `%Y%m%dT%H%M%S%f` timestamps. Anything else (notably
+# path separators or `..`) is rejected so IDs can't escape the symbol dir.
+_VARIANT_ID_RE = re.compile(r"\d{8}T\d{12}")
+
+
+def is_valid_variant_id(variant_id: str) -> bool:
+    return bool(_VARIANT_ID_RE.fullmatch(variant_id))
 
 
 def _phoneme_dir() -> Path:
@@ -157,6 +164,8 @@ def variant_path(symbol: str, variant_id: str) -> Path:
 
 
 def delete_variant(symbol: str, variant_id: str) -> bool:
+    if not is_valid_variant_id(variant_id):
+        return False
     wav = variant_path(symbol, variant_id)
     meta = wav.with_suffix(".json")
     if not wav.exists() and not meta.exists():

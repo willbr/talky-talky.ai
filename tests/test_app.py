@@ -782,6 +782,15 @@ def test_variant_delete_204_then_404(client, tmp_path):
     assert r.status_code == 404
 
 
+def test_variant_delete_rejects_path_traversal(client, tmp_path):
+    """A crafted id must not escape the symbol's variant directory."""
+    (tmp_path / "hello.wav").write_bytes(_make_wav_bytes())
+    (tmp_path / "phonemes" / "hh").mkdir(parents=True)
+    r = client.delete("/api/phoneme/variants?symbol=HH&id=../../hello")
+    assert r.status_code == 404
+    assert (tmp_path / "hello.wav").exists()
+
+
 def test_phoneme_propose_accepts_variant_id(client, tmp_path):
     """Two variants exist; passing variant_id selects the older one
     instead of defaulting to most-recent."""

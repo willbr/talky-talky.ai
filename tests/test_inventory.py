@@ -124,6 +124,13 @@ def test_delete_variant_removes_pair(temp_inventory):
     assert inventory.delete_variant("AA", vid) is False
 
 
+def test_delete_variant_rejects_malformed_id(temp_inventory):
+    (temp_inventory / "hello.wav").write_bytes(_wav_bytes())
+    for bad in ["../../hello", "..\\..\\hello", "", "nope", "20260521T211755123456/../x"]:
+        assert inventory.delete_variant("AA", bad) is False
+    assert (temp_inventory / "hello.wav").exists()
+
+
 def test_best_phoneme_variant_prefers_full_context_match(temp_inventory):
     none_id = inventory.save_variant("HH", _wav_bytes(), source="isolated", prev=None, next=None)
     half_id = inventory.save_variant("HH", _wav_bytes(), source="hat", prev=None, next="AE")
