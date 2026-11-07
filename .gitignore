@@ -222,3 +222,6 @@ inventory/
 *.wav
 !tests/fixtures/*.wav
 data/books/
+
+# Brainstorm companion
+.superpowers/
