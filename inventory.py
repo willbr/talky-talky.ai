@@ -48,7 +48,7 @@ LEGACY_VARIANT_ID = "00000000T000000000000"
 _VARIANT_ID_RE = re.compile(r"\d{8}T\d{12}")
 
 
-def is_valid_variant_id(variant_id: str) -> bool:
+def is_valid_id(variant_id: str) -> bool:
     return bool(_VARIANT_ID_RE.fullmatch(variant_id))
 
 
@@ -164,7 +164,7 @@ def variant_path(symbol: str, variant_id: str) -> Path:
 
 
 def delete_variant(symbol: str, variant_id: str) -> bool:
-    if not is_valid_variant_id(variant_id):
+    if not is_valid_id(variant_id):
         return False
     wav = variant_path(symbol, variant_id)
     meta = wav.with_suffix(".json")
